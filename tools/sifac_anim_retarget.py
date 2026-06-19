@@ -769,9 +769,24 @@ def retarget_file(sifac_fbx, out_anim, member, clip_name=None,
         hp_rest = Vector(tbl[hp][2])
         ex0 = _Extractor(ob, tbl)
         hp_par_rot = ex0.world(hp_parent).to_3x3() if hp_parent in ob.pose.bones else Matrix.Identity(3)
-        sifac_rest_z = (src.matrix_world @ src.data.bones["Hips"].matrix_local).translation.z
-        sifas_rest_z = (ob.matrix_world @ ob.data.bones["Hips"].matrix_local).translation.z
-        rscale = (sifas_rest_z / sifac_rest_z) if abs(sifac_rest_z) > 1e-6 else 1.0
+        # Scale the SIFAC hips travel into SIFAS proportions by the ratio of the
+        # two rigs' actual SIZE (Hips->Head length), which is axis-independent.
+        # The old proxy -- the hips' rest Z coordinate -- breaks when the
+        # imported SIFAC rig stands along a different axis: its Hips-Z is then
+        # ~0 (or negative), so sifas_z/sifac_z blows up (e.g. -52) and any clip
+        # that actually travels flings the character hundreds of units across
+        # the stage (and flips its direction).  Hips->Head length is ~the same
+        # on both rigs (so rscale ~= 1) and stays correct whatever the import
+        # scale or orientation.
+        def _rig_size(o):
+            if "Head" not in o.data.bones or "Hips" not in o.data.bones:
+                return 0.0
+            head = (o.matrix_world @ o.data.bones["Head"].matrix_local).translation
+            hips = (o.matrix_world @ o.data.bones["Hips"].matrix_local).translation
+            return (head - hips).length
+        sifac_size = _rig_size(src)
+        sifas_size = _rig_size(ob)
+        rscale = (sifas_size / sifac_size) if sifac_size > 1e-6 else 1.0
         baseline = None
         hp_pos = []
         root_delta = []  # per-frame prefab-space Vector, for DCC bakes
