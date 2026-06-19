@@ -1,7 +1,7 @@
 # Love Live! SIFAC Toolkit
 
 Tools to pull the **3D models, textures, animations, cameras and stages** out of
-*Love Live! School idol festival ~after school ACTIVITY~* (SIFAC, PS4 & Arcade)
+Love Live! School idol festival ~after school ACTIVITY~ (SIFAC, PS4 & Arcade)
 and turn them into files you can open in everyday 3D software.
 
 **한국어 안내는 아래 [한국어](#한국어) 섹션에 있습니다.**
