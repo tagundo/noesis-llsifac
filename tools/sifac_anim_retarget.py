@@ -514,7 +514,8 @@ def _quat_wxyz(xyzw):
     return Quaternion((xyzw[3], xyzw[0], xyzw[1], xyzw[2]))
 
 
-def _bake_prefab_action(ob, order, tbl, local_by_name, root_delta, times, fps):
+def _bake_prefab_action(ob, order, tbl, local_by_name, root_delta, times, fps,
+                        verbose=True):
     """Keyframe ``ob`` (the rebuilt SIFAS rig) from the per-frame Unity-local
     quaternions in ``local_by_name`` (bone name -> [(x,y,z,w), ...]).  Only the
     animated bones are keyed; the rest stay at rest, which is what the motion
@@ -529,7 +530,11 @@ def _bake_prefab_action(ob, order, tbl, local_by_name, root_delta, times, fps):
     anim_bones = [n for n in order if n in local_by_name]
     scene = bpy.context.scene
     last_kf = 0
-    for fi in range(len(times)):
+    n_t = len(times)
+    prog_step = max(1, n_t // 50)
+    for fi in range(n_t):
+        if verbose and (fi % prog_step == 0 or fi + 1 == n_t):
+            print("[progress] bake %d/%d" % (fi + 1, n_t), flush=True)
         kf = int(round(times[fi] * fps))
         last_kf = kf
         Wu = {}
@@ -792,10 +797,14 @@ def retarget_file(sifac_fbx, out_anim, member, clip_name=None,
         root_delta = []  # per-frame prefab-space Vector, for DCC bakes
 
     frames = list(range(f0, f1 + 1, max(1, step)))
-    for f in frames:
+    n_frames = len(frames)
+    prog_step = max(1, n_frames // 50)   # ~2% granularity
+    for i, f in enumerate(frames):
         scene.frame_set(f)
         bpy.context.view_layer.update()
         times.append((f - f0) / fps)
+        if verbose and (i % prog_step == 0 or i + 1 == n_frames):
+            print("[progress] retarget %d/%d" % (i + 1, n_frames), flush=True)
         # prefab-frame world rotation per bone.  Absolute aiming for the arm
         # chain (Arm/ForeArm/Hand/fingers) -- those rest ~45 deg apart and must
         # land where SIFAC points.  Everything else (shoulders, chest, spine,
@@ -880,8 +889,21 @@ def retarget_file(sifac_fbx, out_anim, member, clip_name=None,
     # Other formats: bake the motion onto the rebuilt SIFAS rig, export via Blender.
     dcc = [f for f in formats if f != "anim"]
     if dcc:
+        # Drop everything except our rebuilt SIFAS rig first.  The imported SIFAC
+        # *source* armature carries hundreds of hair/skirt/accessory/dynamic
+        # bones plus its own imported action; if it lingers in the scene the
+        # glTF/FBX exporters try to evaluate that action and spew one
+        # "Animation target pose.bones[...] not found" warning per bone.  Purge
+        # the stray actions too, so the only animation exported is the clean
+        # clip the bake is about to create on ``ob``.
+        for o in list(bpy.data.objects):
+            if o is not ob:
+                bpy.data.objects.remove(o, do_unlink=True)
+        for act in list(bpy.data.actions):
+            bpy.data.actions.remove(act)
         _bake_prefab_action(ob, order, tbl, local_by_name,
-                            root_delta if do_root else None, times, fps)
+                            root_delta if do_root else None, times, fps,
+                            verbose=verbose)
         written += _export_formats(ob, out_base, dcc, verbose=verbose)
 
     return written if len(written) != 1 else written[0]
@@ -934,15 +956,26 @@ def main():
     formats = [f.strip().lower() for f in args.format.split(",") if f.strip()]
 
     if args.batch:
+        base = Path(args.batch)
         outdir = Path(args.outdir or "anim_out")
         outdir.mkdir(parents=True, exist_ok=True)
-        files = sorted([p for p in Path(args.batch).iterdir()
-                        if p.suffix.lower() == ".fbx"])
+        # Recurse into subfolders -- a SIFAC motion dump nests the .fbx files,
+        # so a top-level-only scan found nothing ("no .fbx files").  Mirror the
+        # source subfolder layout in the output so same-named files in different
+        # folders don't collide.
+        files = sorted(p for p in base.rglob("*")
+                       if p.is_file() and p.suffix.lower() == ".fbx")
         if not files:
-            print("no .fbx files in", args.batch)
+            print("no .fbx files under", base, "(searched subfolders too)")
             return 1
+        print("[batch] %d .fbx file(s) under %s" % (len(files), base))
         for fb in files:
-            out = outdir / (fb.stem + ".anim")
+            try:
+                rel = fb.relative_to(base).with_suffix(".anim")
+            except ValueError:
+                rel = Path(fb.stem + ".anim")
+            out = outdir / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
             try:
                 retarget_file(fb, out, args.member, clip_name=fb.stem,
                               prefab=args.prefab, skeleton_json=args.skeleton,
