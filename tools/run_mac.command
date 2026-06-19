@@ -1,8 +1,15 @@
 #!/bin/bash
-# Double-clickable macOS launcher for the SIFAC Batch Extractor GUI.
+# Double-clickable macOS launcher for the SIFAC Toolbox GUI.
 #
-# In Finder: double-click this file. The first time, macOS may block it —
-# right-click → Open, or run once in Terminal:  chmod +x run_mac.command
+# In Finder: double-click this file.
+#
+# "적절한 접근 권한이 없어 실행할 수 없습니다 / cannot be executed because you
+# do not have appropriate access privileges" 가 뜨면, 압축을 풀 때 실행 권한이
+# 사라진 경우입니다.  해결(택1):
+#   1) 동봉한 .zip 을 Finder에서 더블클릭해 '보관 유틸리티(Archive Utility)'로
+#      다시 풀면 권한이 보존됩니다.
+#   2) 또는 이 파일이 있는 폴더에서 Terminal로 한 번만:  chmod +x run_mac.command
+# 그리고 처음 실행 시 'unidentified developer' 경고가 나오면 → 우클릭 → 열기.
 #
 # It finds a Python with Tkinter, makes sure quickbms is available, and opens
 # the GUI.

@@ -162,13 +162,100 @@ python3 sifac_extract.py IN OUT --dry-run
 
 ---
 
-## 추출 후 Noesis 에서 열기
+## 추출 후: ⭐ FBX로 바로 변환 (Noesis 불필요, MMD 아님)
 
-풀린 `.bmarc`(모델/모션), `.btx`(텍스처) 등은 이 저장소의 Noesis 플러그인
-(`plugins/python/fmt_Blade_bmarc.py`)으로 열 수 있습니다.
-모션(`mot_*`)은 같은 폴더의 모델과 함께 로드해야 본에 적용됩니다.
-VMD 내보내기에는 vmd 모듈이 필요합니다:
-<https://github.com/h-kidd/noesis-vmd>
+풀린 `.bmarc`(모델/모션), `.bscam`(카메라), `.btx`(텍스처)를 **Noesis 없이**
+곧바로 **FBX + PNG** 로 변환합니다. Noesis로 하나씩 여는 것보다 훨씬 빠르고,
+`noesis-vmd`(MMD용 PMX/VMD)와 달리 **Blender·Unity·Unreal·Maya** 등에서
+바로 쓰는 표준 FBX를 만듭니다.
+
+```bash
+# GUI: ② 변환 → FBX 탭 (run_mac.command / sifac_gui.py)
+# CLI: 폴더 전체를 8개 동시 작업으로 FBX/PNG 변환
+python3 sifac_convert.py /추출결과 /fbx출력 -j 8
+
+# 모델/무대만 · 모션만 · 카메라만 · 텍스처만
+python3 sifac_convert.py IN OUT --preset models
+python3 sifac_convert.py IN OUT --preset animations
+python3 sifac_convert.py IN OUT --preset cameras
+python3 sifac_convert.py IN OUT --preset textures
+
+# 무엇이 변환될지 미리 보기
+python3 sifac_convert.py IN OUT --check
+```
+
+| 입력 | 출력 |
+|------|------|
+| 모델/무대 `.bmarc` | `.fbx` — 뼈대(스켈레톤)·스키닝·머티리얼·모프(표정) |
+| 모션 `mot_*.bmarc` | `.fbx` — 같은 폴더의 모델을 리깅 + 모션을 take로 |
+| 카메라 `.bscam` | `.fbx` — 위치·회전·FOV 애니메이션 카메라 |
+| 텍스처 `.btx`/`texture.pac` | `.png` |
+
+주요 옵션:
+
+| 옵션 | 의미 |
+|------|------|
+| `-j, --jobs N` | 동시 실행 개수 (기본: CPU 코어 수) |
+| `--preset all\|models\|animations\|cameras\|textures` | 변환 대상 |
+| `--engine auto\|blender\|python` | FBX 생성 엔진 (아래 설명) |
+| `--up-axis y\|z` | 출력 FBX의 Up 축. `y`(기본)는 **SIFAS·Maya·Unity와 동일한 Y-up** — 기존 SIFAS 모딩 툴 FBX와 같은 방향. `z`는 Z-up 파일. 둘 다 Blender에선 똑바로 섭니다 |
+| `--scale F` | 전체 지오메트리/애니메이션 스케일 (기본 1.0) |
+| `--anim-only` | 모션은 뼈+애니만 (메시 제외, 파일 작게) |
+| `--bundle-motions` | 한 폴더의 모션들을 모델 FBX 하나에 take로 묶기 |
+| `--models-dir DIR` | 모델이 모여있는 폴더. 라이브/모션이 모델과 다른 폴더에 있을 때, 캐릭터 이름(예: `03_kotori`)으로 자동 매칭 |
+| `--model PATH` | 모든 모션을 리깅할 모델을 강제 지정 |
+| `--no-morphs` / `--no-textures` | 모프 / 텍스처 디코드 생략 |
+| `--include / --exclude GLOB` | 파일명 글롭으로 포함/제외 |
+| `--skip-existing` | 이미 있는 결과는 건너뜀 |
+
+> **⭐ FBX 엔진 (`--engine`):** 두 가지 엔진을 제공합니다. **둘 다 Blender에서
+> 메시·스키닝·애니가 정상**으로 들어옵니다(아래 “Blender 호환” 참고).
+>
+> - **`python`**(권장·기본 후보) — 순수 파이썬 라이터. **무설치·빠르고**, Blender·
+>   Unity·Maya 모두에서 바르게 deform/애니됩니다. 바인드 행렬·`BindPose`·단위(미터)를
+>   표준대로 써서, 캐릭터가 **약 1.5 m로 똑바로(머리 위)** 들어옵니다.
+> - **`blender`** — Blender 파이썬 모듈 `bpy`로 리그를 만들어 Blender가 직접 FBX를
+>   내보냅니다. Blender의 본 방향(head/tail/roll)을 그대로 따르므로, Blender에서
+>   **본 축까지 네이티브**로 맞추고 싶을 때 좋습니다. `pip install bpy` 필요(파이썬
+>   버전 일치), 파일당 수십 초로 느립니다.
+> - **`auto`**(기본) — `bpy`가 깔려 있으면 `blender`, 없으면 `python`.
+>
+> 대부분은 **무설치·고속의 `python`** 으로 충분합니다. Blender의 본 방향 컨벤션까지
+> 완전히 맞춰야 하면 `pip install bpy` 후 `--engine blender`.
+>
+> > **방향(Up 축):** 두 엔진 모두 **기본 `--up-axis y`(Y-up)** 로, 기존 **SIFAS
+> > 모딩 툴 FBX와 같은 축**으로 나옵니다 — Blender에선 똑바로 서고, Maya/Unity에서도
+> > SIFAS와 동일하게 정렬됩니다. Blender 기본 Z-up 파일이 필요하면 `--up-axis z`.
+> > (이전엔 `blender` 엔진이 옆으로 누워 SIFAS와 어긋났는데, 이제 바로잡혔습니다.)
+
+> **모션 → 모델 짝짓기:** 모션 파일에는 본 이름만 있어 모델의 rest pose가
+> 필요합니다. ① 같은 폴더의 모델 → ② 입력 트리 전체의 모델 → ③ `--models-dir`
+> 폴더 순으로, **캐릭터 이름(`mot_03_kotori_…` ↔ `mod_03_kotori_…`)으로 자동
+> 매칭**합니다. SIFAC처럼 `live/`(모션)와 모델이 분리돼 있으면 `--models-dir`로
+> 모델 폴더를 가리키세요. 강제 지정은 `--model`.
+>
+> ```bash
+> # 라이브(모션) 폴더를 변환하면서, 모델은 따로 추출해둔 폴더에서 매칭
+> python3 sifac_convert.py /추출/live /fbx --preset animations --models-dir /추출/models
+> ```
+
+> **좌표계/UV:** Y-up이며 V축을 게임(좌상단)→FBX(좌하단)에 맞춰 뒤집습니다.
+> 방향/스케일은 임포터에서도 조정할 수 있습니다.
+
+> **BC7/BC6H 텍스처:** 표준 라이브러리만으로 raw·BC1~BC5를 디코드합니다.
+> 고급 BC7/BC6H는 `pip install texture2ddecoder` 가 있으면 디코드하고, 없으면
+> 해당 텍스처만 건너뜁니다(지오메트리/머티리얼은 정상 출력).
+
+> **검증:** FBX 인코더·씬 빌더·텍스처 파이프라인은 자체 테스트로 검증합니다
+> (`python3 tools/tests/test_convert.py`). 파일별 오류는 비치명적이라 나머지
+> 변환은 계속됩니다. 실제 게임 파일에서 이상이 보이면 샘플을 알려주세요.
+
+### (참고) 옛 방식 — Noesis 에서 열기
+
+풀린 `.bmarc`/`.btx`는 이 저장소의 Noesis 플러그인
+(`plugins/python/fmt_Blade_bmarc.py`)으로도 열 수 있습니다. 모션(`mot_*`)은
+같은 폴더의 모델과 함께 로드해야 본에 적용됩니다. VMD(MMD) 내보내기에는 vmd
+모듈이 필요합니다: <https://github.com/h-kidd/noesis-vmd>
 
 ---
 

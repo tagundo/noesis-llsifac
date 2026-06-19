@@ -1,0 +1,14 @@
+# Python caches / build artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local converter output
+/sifac_fbx/
+/sifac_extracted/
+
+# Compiled QuickBMS dropped next to the tools
+tools/bin/
+tools/quickbms
+tools/quickbms_4gb_files
