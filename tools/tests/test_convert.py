@@ -459,6 +459,330 @@ def test_planner():
               f"motion paired to matching model by name ({pairing})")
 
 
+def test_anim_retarget():
+    """The .anim writer + skeleton table + Unity path hashing, no bpy needed."""
+    print("anim retarget:")
+    import zlib
+    import sifac_anim_retarget as ar
+
+    # bundled skeleton loads and the core set is the shared SIFAC/SIFAS bones.
+    tbl, relpath, core, member = ar.load_skeleton()
+    check(len(tbl) > 100, f"skeleton has all bones ({len(tbl)})")
+    check("Hips" in core and "Spine" in core, "core contains body bones")
+    check("Spine2" not in core, "SIFAS-only Spine2 excluded from retarget set")
+    check(relpath["Hips"].endswith("Hips_Position/Hips"),
+          f"Hips relative path ({relpath['Hips']})")
+
+    # Unity binding path hash is the standard CRC32 of the path string.
+    p = "ch0006_co0040_member/Reference/Move/Hips_Position/Hips"
+    check((zlib.crc32(p.encode()) & 0xffffffff) == 3386150484,
+          "crc32 path hash matches Unity")
+
+    # Sign-continuity flips neighbours onto the same hemisphere.
+    seq = [(0, 0, 0, 1), (0, 0, 0, -1), (0, 0, 0, 1)]
+    ar._ensure_sign_continuity(seq)
+    check(seq[1] == (0, 0, 0, 1) and seq[2] == (0, 0, 0, 1),
+          "quaternion sign continuity")
+
+    # Finite-difference tangents: a linear ramp has constant unit slope.
+    times = [0.0, 1.0, 2.0]
+    vals = [(0.0,), (1.0,), (2.0,)]
+    tin, tout = ar._finite_diff_tangents(times, vals)
+    check(all(approx(tin[i][0], 1.0) for i in range(3)),
+          "finite-difference tangents on a linear ramp")
+
+    # Write a tiny clip and parse the structure back.
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "tiny.anim"
+        t = [0.0, 1 / 60, 2 / 60]
+        rot = [("root/Hips", [(0, 0, 0, 1), (0, 0, 0.01, 0.9999), (0, 0, 0.02, 0.9998)]),
+               ("root/Hips/Spine", [(0, 0, 0, 1)] * 3)]
+        pos = [("root/Hips", [(0, 1.0, 0), (0, 1.01, 0), (0, 1.02, 0)])]
+        ar.write_anim(out, "tiny", t, rot, pos, fps=60)
+        text = out.read_text()
+        check("AnimationClip:" in text and "m_RotationCurves:" in text,
+              "written .anim has clip + rotation section")
+        check(text.count("  - curve:") == 3, "wrote 2 rotation + 1 position curve")
+        # every curve must have a matching binding (rot=2, pos=1)
+        hsp = zlib.crc32(b"root/Hips/Spine") & 0xffffffff
+        check(("path: %d" % hsp) in text and "attribute: 2" in text,
+              "rotation binding present with crc32 hash")
+        hhip = zlib.crc32(b"root/Hips") & 0xffffffff
+        check(text.count("path: %d" % hhip) == 2,
+              "Hips has both rotation and position bindings")
+        check("m_SampleRate: 60" in text, "sample rate metadata")
+
+
+def test_anim_twist_bones():
+    """Roll/twist bones take a fixed fraction of the driver bone's X-twist."""
+    print("anim twist bones:")
+    import math
+    import sifac_anim_retarget as ar
+
+    # _twist_about_x recovers the signed rotation angle about +X.
+    for deg in (-90.0, -30.0, 0.0, 45.0, 120.0):
+        a = math.radians(deg)
+        q = (math.sin(a / 2), 0.0, 0.0, math.cos(a / 2))
+        check(approx(math.degrees(ar._twist_about_x(q)), deg, 1e-4),
+              f"twist_about_x recovers {deg:g} deg")
+
+    # A pure 80 deg twist on the driver -> half (40 deg) on ForeArmRoll (+0.5)
+    # and minus half (-40 deg) on ArmRoll (-0.5), about X, rest = identity.
+    a = math.radians(80.0)
+    drv = [(math.sin(a / 2), 0.0, 0.0, math.cos(a / 2))]
+    rot_seq = {"RightHand": drv, "RightArm": drv,
+               "LeftHand": drv, "LeftArm": drv}
+    tbl, _relpath, _core, _m = ar.load_skeleton()
+    curves = ar._twist_curves(rot_seq, lambda n: n, tbl)
+    got = {p: v[0] for p, v in curves}
+    check("RightForeArmRoll" in got and "RightArmRoll" in got,
+          "roll curves emitted for both arm and forearm")
+    fa = ar._twist_about_x(got["RightForeArmRoll"])
+    ar_ = ar._twist_about_x(got["RightArmRoll"])
+    check(approx(math.degrees(fa), 40.0, 1e-3), "ForeArmRoll = +1/2 Hand twist")
+    check(approx(math.degrees(ar_), -40.0, 1e-3), "ArmRoll = -1/2 Arm twist")
+    # roll bones rotate purely about X (y,z stay zero)
+    check(approx(got["RightForeArmRoll"][1], 0.0) and approx(got["RightForeArmRoll"][2], 0.0),
+          "roll bone is a pure X-axis twist")
+
+    # strength scales the angle linearly: 0.5x -> 20 deg, 0x -> identity.
+    half = {p: v[0] for p, v in ar._twist_curves(rot_seq, lambda n: n, tbl, 0.5)}
+    check(approx(math.degrees(ar._twist_about_x(half["RightForeArmRoll"])), 20.0, 1e-3),
+          "twist_strength 0.5 halves the roll angle")
+    zero = {p: v[0] for p, v in ar._twist_curves(rot_seq, lambda n: n, tbl, 0.0)}
+    check(approx(zero["RightForeArmRoll"][3], 1.0, 1e-6),
+          "twist_strength 0 leaves roll bones at rest")
+
+    # known export formats are exactly the supported set.
+    check(set(ar.EXPORT_FORMATS) == {"anim", "fbx", "glb", "gltf", "bvh"},
+          "export format set")
+
+
+def test_anim_smooth():
+    """The optional low-pass reduces frame-to-frame change but is a no-op
+    for short windows, and leaves a steady signal untouched."""
+    print("anim smooth:")
+    import math
+    import sifac_anim_retarget as ar
+
+    # window < 3 is a no-op (identity list returned).
+    seq = [(0, 0, 0, 1), (0, 0, 0.3, 0.95)]
+    check(ar._smooth_quat_seq(seq, 2) is seq, "window<3 is a no-op")
+
+    # A 1-frame spike is attenuated by the low-pass.
+    flat = (0.0, 0.0, 0.0, 1.0)
+    a = math.radians(60.0)
+    spike = (math.sin(a / 2), 0.0, 0.0, math.cos(a / 2))
+    seq = [flat, flat, spike, flat, flat]
+    out = ar._smooth_quat_seq(seq, 3)
+    before = ar._twist_about_x(seq[2])
+    after = ar._twist_about_x(out[2])
+    check(abs(after) < abs(before), "isolated spike is attenuated")
+    # outputs stay unit quaternions
+    nrm = math.sqrt(sum(c * c for c in out[2]))
+    check(approx(nrm, 1.0, 1e-6), "smoothed quaternion stays normalised")
+
+
+def test_anim_bundle_parse():
+    """The bundle tool reads back a written .anim (paths, keys, hashes)."""
+    print("anim bundle parse:")
+    import sifac_anim_retarget as ar
+    import sifac_anim_to_bundle as ab
+
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "c.anim"
+        t = [0.0, 1 / 60, 2 / 60]
+        rot = [("Reference/Move/Hips_Position/Hips", [(0, 0, 0, 1)] * 3),
+               ("Reference/Move/Hips_Position/Hips/Spine",
+                [(0, 0, 0, 1), (0, 0, 0.02, 0.9998), (0, 0, 0.04, 0.9992)])]
+        pos = [("Reference/Move/Hips_Position", [(0, 1, 0)] * 3)]
+        ar.write_anim(out, "myclip", t, rot, pos, fps=60)
+
+        c = ab.parse_anim(out)
+        check(c["name"] == "myclip", "clip name parsed")
+        check(c["sample_rate"] == 60, "sample rate parsed")
+        check(len(c["rot"]) == 2 and len(c["pos"]) == 1, "curve counts parsed")
+        spine = "Reference/Move/Hips_Position/Hips/Spine"
+        check(spine in c["rot"] and len(c["rot"][spine]) == 3,
+              "rotation curve keys parsed")
+        check(abs(c["rot"][spine][2][1][2] - 0.04) < 1e-6,
+              "rotation key value parsed (z of last Spine key)")
+        check(c["pos"]["Reference/Move/Hips_Position"][0][1] == (0, 1, 0),
+              "position key value parsed")
+        # the binary binding hash is the CRC32 of the path string
+        import zlib
+        check(ab.crc32_path(spine) == (zlib.crc32(spine.encode()) & 0xffffffff),
+              "crc32 path hash matches Unity binding")
+
+
+def test_anim_dense_clip():
+    """The bundle injector resamples and bakes a DenseClip whose curve layout
+    matches the GenericBinding order (no UnityPy needed for the math)."""
+    print("anim dense clip:")
+    import sifac_anim_to_bundle as ab
+
+    # linear resample onto a 0,0.5,1 grid
+    keys = [(0.0, (0.0,)), (1.0, (10.0,))]
+    r = ab._resample(keys, [0.0, 0.5, 1.0])
+    check(approx(r[0][0], 0.0) and approx(r[1][0], 5.0) and approx(r[2][0], 10.0),
+          "linear resample interpolates")
+    # hold past the end
+    r2 = ab._resample(keys, [2.0])
+    check(approx(r2[0][0], 10.0), "resample holds past the last key")
+
+    # build a DenseClip into a minimal template tree
+    tree = {
+        "m_Name": "template_clip", "m_Legacy": True, "m_Compressed": True,
+        "m_SampleRate": 30.0, "m_UseHighQualityCurve": True,
+        "m_ClipBindingConstant": {"genericBindings": [], "pptrCurveMapping": []},
+        "m_MuscleClip": {
+            "m_IndexArray": [-1, -1],
+            "m_ValueArrayReferencePose": [],
+            "m_ValueArrayDelta": [],
+            "m_StartTime": 0.0, "m_StopTime": 9.0,
+            "m_Clip": {"data": {
+                "m_StreamedClip": {"data": [1, 2, 3], "curveCount": 7},
+                "m_DenseClip": {"m_FrameCount": 0, "m_CurveCount": 0,
+                                "m_SampleRate": 30.0, "m_BeginTime": 0.0,
+                                "m_SampleArray": []},
+                "m_ConstantClip": {"data": [1.0]},
+            }},
+        },
+        "m_MuscleClipSize": 999,
+    }
+    anim = {
+        "name": "mine", "sample_rate": 60.0, "stop": 1.0,
+        "pos": {"root/Hips_Position": [(0.0, (0.0, 1.0, 0.0)), (1.0, (0.0, 2.0, 0.0))]},
+        "rot": {"root/Hips": [(0.0, (0, 0, 0, 1)), (1.0, (0, 0, 0, 1))]},
+    }
+    out, frames, ccount, nbind = ab.build_dense_clip(tree, anim, sample_rate=2.0)
+    check(frames == 3, "frame count = stop*rate + 1")          # 1.0*2 + 1
+    check(ccount == 7, "curve count = 3 (pos) + 4 (rot)")       # 3 + 4
+    check(nbind == 2, "two bindings (one pos, one rot)")
+    dc = out["m_MuscleClip"]["m_Clip"]["data"]["m_DenseClip"]
+    check(len(dc["m_SampleArray"]) == frames * ccount, "sample array is frame*curve")
+    # frame 0: position (0,1,0) then quaternion (0,0,0,1)
+    check(dc["m_SampleArray"][:7] == [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+          "frame-major layout, position before rotation")
+    # streamed/constant emptied; binding order = pos then rot
+    sc = out["m_MuscleClip"]["m_Clip"]["data"]["m_StreamedClip"]
+    cc = out["m_MuscleClip"]["m_Clip"]["data"]["m_ConstantClip"]
+    check(sc["curveCount"] == 0 and sc["data"] == [] and cc["data"] == [],
+          "streamed and constant clips emptied (all dense)")
+    gb = out["m_ClipBindingConstant"]["genericBindings"]
+    check(gb[0]["attribute"] == 1 and gb[1]["attribute"] == 2,
+          "binding attributes: 1=position, 2=rotation")
+    check(gb[0]["typeID"] == 4 and gb[1]["path"] == ab.crc32_path("root/Hips"),
+          "binding typeID=4 (Transform) and CRC32 path hash")
+    check(len(out["m_MuscleClip"]["m_ValueArrayDelta"]) == ccount,
+          "value-array-delta has one entry per float curve")
+    check(out["m_Name"] == "template_clip",
+          "clip name kept from template by default")
+    check(out["m_MuscleClip"]["m_ValueArrayReferencePose"] == [],
+          "reference pose reset to empty (no length mismatch)")
+
+    # positive-exponent floats must parse (regex includes '+'), and a keyless
+    # curve must be dropped without crashing.
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as td:
+        p = Path(td) / "c.anim"
+        p.write_text(
+            "%YAML 1.1\n"
+            "AnimationClip:\n"
+            "  m_Name: c\n"
+            "  m_SampleRate: 60\n"
+            "  m_PositionCurves:\n"
+            "  - curve:\n"
+            "      m_Curve:\n"
+            "      - serializedVersion: 3\n"
+            "        time: 0\n"
+            "        value: {x: 1.5e+10, y: 0, z: 0}\n"
+            "    path: root/Hips_Position\n"
+            "  m_ScaleCurves: []\n")
+        c2 = ab.parse_anim(p)
+        check("root/Hips_Position" in c2["pos"] and
+              c2["pos"]["root/Hips_Position"][0][1][0] == 1.5e10,
+              "positive-exponent float (e+NN) parses")
+
+    # a column with no keys is dropped, keeping counts consistent (no IndexError)
+    tree2 = {
+        "m_Name": "t", "m_SampleRate": 30.0, "m_UseHighQualityCurve": True,
+        "m_Legacy": False, "m_Compressed": False,
+        "m_ClipBindingConstant": {"genericBindings": [], "pptrCurveMapping": []},
+        "m_MuscleClip": {"m_IndexArray": [-1], "m_ValueArrayReferencePose": [0.0],
+                         "m_ValueArrayDelta": [], "m_StartTime": 0.0, "m_StopTime": 1.0,
+                         "m_Clip": {"data": {
+                             "m_StreamedClip": {"data": [], "curveCount": 0},
+                             "m_DenseClip": {"m_FrameCount": 0, "m_CurveCount": 0,
+                                             "m_SampleRate": 30.0, "m_BeginTime": 0.0,
+                                             "m_SampleArray": []},
+                             "m_ConstantClip": {"data": []}}}},
+        "m_MuscleClipSize": 0,
+    }
+    anim2 = {"name": "m", "sample_rate": 60.0, "stop": 1.0,
+             "pos": {"root/Empty": []},  # keyless -> must be dropped, not crash
+             "rot": {"root/Hips": [(0.0, (0, 0, 0, 1)), (1.0, (0, 0, 0, 1))]}}
+    o2, fr2, cc2, nb2 = ab.build_dense_clip(tree2, anim2, sample_rate=2.0)
+    check(nb2 == 1 and cc2 == 4, "keyless curve dropped; only the rotation remains")
+    check(len(o2["m_MuscleClip"]["m_ValueArrayDelta"]) == cc2,
+          "value-delta stays in sync after dropping the keyless curve")
+
+
+def test_anim_merge():
+    """Merging a faithful + a natural clip swaps only the arm group."""
+    print("anim merge:")
+    import re
+    import zlib
+    import sifac_anim_merge as am
+
+    def clip(arm_w, leg_w):
+        return (
+            "%%YAML 1.1\n"
+            "AnimationClip:\n"
+            "  m_Name: c\n"
+            "  m_RotationCurves:\n"
+            "  - curve:\n"
+            "      m_Curve:\n"
+            "      - time: 0\n"
+            "        value: {x: 0, y: 0, z: 0, w: %s}\n"
+            "    path: root/Spine2/LeftArm\n"
+            "  - curve:\n"
+            "      m_Curve:\n"
+            "      - time: 0\n"
+            "        value: {x: 0, y: 0, z: 0, w: %s}\n"
+            "    path: root/Hips/LeftLeg\n"
+            "  m_PositionCurves:\n"
+            "  - curve:\n"
+            "      m_Curve:\n"
+            "      - time: 0\n"
+            "        value: {x: 0, y: 1, z: 0}\n"
+            "    path: root/Hips_Position\n"
+            "  m_ScaleCurves: []\n" % (arm_w, leg_w))
+
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "faithful.anim"
+        n = Path(td) / "natural.anim"
+        o = Path(td) / "out.anim"
+        f.write_text(clip("0.11", "0.51"))   # faithful: arm w=0.11, leg w=0.51
+        n.write_text(clip("0.99", "0.59"))   # natural:  arm w=0.99, leg w=0.59
+        am.merge(str(f), str(n), str(o), am.DEFAULT_NATURAL, clip_name="m")
+        text = o.read_text()
+        # LeftArm must come from NATURAL (w=0.99), LeftLeg from FAITHFUL (w=0.51)
+        arm = re.search(r'LeftArm', text)
+        # find the value line just before the LeftArm path
+        block_arm = text[:text.index("path: root/Spine2/LeftArm")]
+        block_leg = text[:text.index("path: root/Hips/LeftLeg")]
+        check("w: 0.99" in block_arm.rsplit("- curve:", 1)[-1],
+              "LeftArm taken from NATURAL clip")
+        check("w: 0.51" in block_leg.rsplit("- curve:", 1)[-1],
+              "LeftLeg kept from FAITHFUL clip")
+        check("m_PositionCurves:" in text and "Hips_Position" in text,
+              "position/root motion kept from faithful")
+        # bindings: a rotation binding (attr 2) for the arm path hash
+        h = zlib.crc32(b"root/Spine2/LeftArm") & 0xffffffff
+        check(("path: %d" % h) in text, "merged clip has arm binding")
+
+
 def main():
     test_math()
     test_png()
@@ -471,6 +795,12 @@ def main():
     test_camera()
     test_bscam_parse_truncated()
     test_planner()
+    test_anim_retarget()
+    test_anim_twist_bones()
+    test_anim_smooth()
+    test_anim_bundle_parse()
+    test_anim_dense_clip()
+    test_anim_merge()
     print()
     if _FAILS:
         print(f"{len(_FAILS)} FAILURE(S):")
