@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SIFAC Toolbox — graphical interface (Extract + Convert)
-=======================================================
+SIFAC Toolbox — graphical interface (Extract + Convert + Retarget)
+==================================================================
 
-A small Tkinter front-end with two tabs:
+A small Tkinter front-end with three tabs:
 
   * **Extract** — drives ``sifac_extract.py``: game ``.cmp``/``ARC`` ->
     ``.bmarc`` / ``.btx`` (parallel QuickBMS or the pure-Python native engine).
   * **Convert** — drives ``sifac_convert.py``: extracted
     ``.bmarc`` / ``.btx`` / ``.bscam`` -> **FBX + PNG** (models, motions,
     cameras), fast and parallel, *no Noesis and no MMD*.
+  * **Retarget** — drives ``sifac_anim_retarget.py``: a SIFAC motion FBX ->
+    a SIFAS clip, **without Unity's lossy Humanoid path**, with adjustable
+    ArmRoll strength / smoothing and multi-format output (.anim / FBX / glTF /
+    BVH).  Needs ``bpy`` (the same one-click install the Convert tab offers).
 
 The UI is in **English by default**; use the language selector (top-right) to
 switch to **Korean (한국어)** — the whole window re-translates live.
@@ -139,6 +143,60 @@ STRINGS = {
                              "ko": "애니메이션/모션 (Animations)"},
     "preset_cv_cameras": {"en": "Cameras", "ko": "카메라 (Cameras)"},
     "preset_cv_textures": {"en": "Textures", "ko": "텍스처 (Textures)"},
+    # retarget tab ----------------------------------------------------------
+    "tab_retarget": {"en": "  ③ Retarget → SIFAS  ",
+                     "ko": "  ③ 리타깃 → SIFAS  "},
+    "rt_input": {"en": "SIFAC motion FBX (or a folder in batch mode)",
+                 "ko": "SIFAC 모션 FBX (일괄 모드는 폴더)"},
+    "rt_output": {"en": "Output folder", "ko": "출력 폴더"},
+    "rt_member": {"en": "Member name (optional — usually blank)",
+                  "ko": "멤버 이름 (선택 — 보통 비움)"},
+    "rt_prefab": {"en": "SIFAS member .prefab (optional)",
+                  "ko": "SIFAS 멤버 .prefab (선택)"},
+    "rt_cb_batch": {"en": "Batch: input is a folder of .fbx",
+                    "ko": "일괄: 입력이 .fbx 폴더"},
+    "rt_cb_root": {"en": "Root / stage motion", "ko": "루트/무대 이동"},
+    "rt_twist": {"en": "ArmRoll strength (0 = off, 1 = game value, >1 stronger)",
+                 "ko": "ArmRoll 강도 (0 = 끔, 1 = 게임값, >1 강하게)"},
+    "rt_smooth": {"en": "Smoothing (frames, 0 = off / faithful)",
+                  "ko": "부드러움 (프레임, 0 = 끔 / 충실)"},
+    "rt_step": {"en": "Frame step (decimate)", "ko": "프레임 간격 (솎기)"},
+    "rt_formats": {"en": "Export formats", "ko": "내보내기 형식"},
+    "rt_cb_bundle": {"en": "Also inject into a Unity bundle (template needed)",
+                     "ko": "Unity 번들에도 주입 (템플릿 필요)"},
+    "rt_template": {"en": "Template bundle (.unity / .bundle)",
+                    "ko": "템플릿 번들 (.unity / .bundle)"},
+    "rt_err_template": {"en": "Bundle output needs a template bundle and single "
+                              "(non-batch) mode with the .anim format on.",
+                        "ko": "번들 출력은 템플릿 번들 + 단일(비일괄) 모드 + .anim "
+                              "형식이 필요합니다."},
+    "rt_bundle_running": {"en": "Injecting into bundle…", "ko": "번들 주입 중…"},
+    "rt_bundle_done": {"en": "Bundle written ✓", "ko": "번들 작성 완료 ✓"},
+    "rt_bundle_fail": {"en": "Bundle injection failed ✗ (code {rc}) — see log "
+                             "(needs: pip install UnityPy)",
+                       "ko": "번들 주입 실패 ✗ (코드 {rc}) — 로그 확인 "
+                             "(필요: pip install UnityPy)"},
+    "rt_start": {"en": "▶ Start retarget", "ko": "▶ 리타깃 시작"},
+    "rt_info": {
+        "en": "Retargets a SIFAC motion onto the SIFAS rig WITHOUT Unity's "
+              "lossy Humanoid path, and drives the SIFAS twist/roll bones so "
+              "the shoulder/elbow skin doesn't pinch. Needs bpy (one-click "
+              "install on the ② Convert tab). '.anim' drops straight into "
+              "Unity; FBX / glTF (.glb) / BVH open in any DCC.",
+        "ko": "SIFAC 모션을 Unity의 손실 Humanoid 경로 없이 SIFAS 리그로 "
+              "리타깃하고, SIFAS 트위스트/롤 본을 구동해 어깨·팔꿈치 살 접힘을 "
+              "막습니다. bpy 필요(② 변환 탭에서 원클릭 설치). '.anim'은 Unity에 "
+              "바로, FBX / glTF (.glb) / BVH는 어떤 DCC에서나 열립니다."},
+    "rt_err_input": {"en": "Pick a valid SIFAC .fbx file (or a folder in "
+                           "batch mode).",
+                     "ko": "유효한 SIFAC .fbx 파일(또는 일괄 모드에서는 폴더)을 "
+                           "선택하세요."},
+    "rt_err_fmt": {"en": "Pick at least one export format.",
+                   "ko": "내보내기 형식을 하나 이상 선택하세요."},
+    "run_retarget": {"en": "Retargeting…", "ko": "리타깃 실행 중…"},
+    "rt_done": {"en": "Retarget finished ✓", "ko": "리타깃 완료 ✓"},
+    "rt_done_fail": {"en": "Retarget failed ✗ (code {rc}) — see log",
+                     "ko": "리타깃 실패 ✗ (코드 {rc}) — 로그 확인"},
     "engine_auto": {"en": "auto (Blender if bpy present, else python)",
                     "ko": "auto (bpy 있으면 Blender, 없으면 파이썬)"},
     "engine_blender": {"en": "blender (native bone axes — needs bpy, slow)",
@@ -266,6 +324,9 @@ class SifacGUI:
         self._converter: convert.Converter | None = None
         self._msgq: "queue.Queue[tuple]" = queue.Queue()
         self._pending_convert = False
+        self._pending_retarget = False
+        self._pending_bundle = None
+        self._proc = None
 
         root.title(self.t("title"))
         root.minsize(820, 660)
@@ -301,6 +362,7 @@ class SifacGUI:
                 pass
         self.nb.tab(self.extract_tab, text=self.t("tab_extract"))
         self.nb.tab(self.convert_tab, text=self.t("tab_convert"))
+        self.nb.tab(self.retarget_tab, text=self.t("tab_retarget"))
         self._refresh_combo(self.preset_combo,
                             ["preset_ex_" + p for p in EXTRACT_PRESETS])
         self._refresh_combo(self.cpreset_combo,
@@ -342,10 +404,13 @@ class SifacGUI:
         self.nb.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
         self.extract_tab = ttk.Frame(self.nb, padding=8)
         self.convert_tab = ttk.Frame(self.nb, padding=8)
+        self.retarget_tab = ttk.Frame(self.nb, padding=8)
         self.nb.add(self.extract_tab, text=self.t("tab_extract"))
         self.nb.add(self.convert_tab, text=self.t("tab_convert"))
+        self.nb.add(self.retarget_tab, text=self.t("tab_retarget"))
         self._build_extract_tab(self.extract_tab)
         self._build_convert_tab(self.convert_tab)
+        self._build_retarget_tab(self.retarget_tab)
 
         # Shared progress + log at the bottom.
         bottom = ttk.Frame(outer)
@@ -533,6 +598,106 @@ class SifacGUI:
         self.btn_cstop.pack(side="left", padx=4)
         self._tr(ttk.Button(btns, command=lambda: self._open(self.var_cout)), "open_output").pack(side="left", padx=4)
 
+    # ------------------------------------------------------- Retarget tab
+
+    def _build_retarget_tab(self, main: "ttk.Frame") -> None:
+        pad = {"padx": 6, "pady": 4}
+        main.columnconfigure(1, weight=1)
+        row = 0
+        self._tr(ttk.Label(main), "rt_input").grid(row=row, column=0, sticky="w", **pad)
+        self.var_rin = tk.StringVar()
+        ttk.Entry(main, textvariable=self.var_rin).grid(row=row, column=1, sticky="ew", **pad)
+        self._tr(ttk.Button(main, command=self._pick_rin), "browse").grid(row=row, column=2, **pad)
+
+        row += 1
+        self._tr(ttk.Label(main), "rt_output").grid(row=row, column=0, sticky="w", **pad)
+        self.var_rout = tk.StringVar()
+        ttk.Entry(main, textvariable=self.var_rout).grid(row=row, column=1, sticky="ew", **pad)
+        self._tr(ttk.Button(main, command=self._pick(self.var_rout, True)), "browse").grid(row=row, column=2, **pad)
+
+        row += 1
+        self._tr(ttk.Label(main), "rt_member").grid(row=row, column=0, sticky="w", **pad)
+        self.var_rmember = tk.StringVar()
+        ttk.Entry(main, textvariable=self.var_rmember).grid(row=row, column=1, sticky="ew", **pad)
+
+        row += 1
+        self._tr(ttk.Label(main), "rt_prefab").grid(row=row, column=0, sticky="w", **pad)
+        self.var_rprefab = tk.StringVar()
+        ttk.Entry(main, textvariable=self.var_rprefab).grid(row=row, column=1, sticky="ew", **pad)
+        self._tr(ttk.Button(main, command=self._pick(self.var_rprefab, False)), "browse").grid(row=row, column=2, **pad)
+
+        row += 1
+        opts = ttk.LabelFrame(main, padding=8)
+        self._tr(opts, "options")
+        opts.grid(row=row, column=0, columnspan=3, sticky="ew", **pad)
+        opts.columnconfigure(5, weight=1)
+        self.var_rbatch = tk.BooleanVar(value=False)
+        self._tr(ttk.Checkbutton(opts, variable=self.var_rbatch), "rt_cb_batch").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=4)
+        self.var_rroot = tk.BooleanVar(value=True)
+        self._tr(ttk.Checkbutton(opts, variable=self.var_rroot), "rt_cb_root").grid(
+            row=0, column=3, columnspan=2, sticky="w", padx=4)
+
+        self._tr(ttk.Label(opts), "rt_twist").grid(row=1, column=0, columnspan=2, sticky="w", padx=4)
+        self.var_rtwist = tk.DoubleVar(value=1.0)
+        ttk.Spinbox(opts, from_=0.0, to=3.0, increment=0.1, width=6,
+                    textvariable=self.var_rtwist).grid(row=1, column=2, sticky="w", padx=4)
+        self._tr(ttk.Label(opts), "rt_smooth").grid(row=1, column=3, sticky="e", padx=4)
+        self.var_rsmooth = tk.IntVar(value=0)
+        ttk.Spinbox(opts, from_=0, to=21, increment=1, width=6,
+                    textvariable=self.var_rsmooth).grid(row=1, column=4, sticky="w", padx=4)
+
+        self._tr(ttk.Label(opts), "rt_step").grid(row=2, column=0, columnspan=2, sticky="w", padx=4)
+        self.var_rstep = tk.IntVar(value=1)
+        ttk.Spinbox(opts, from_=1, to=10, increment=1, width=6,
+                    textvariable=self.var_rstep).grid(row=2, column=2, sticky="w", padx=4)
+
+        self._tr(ttk.Label(opts), "rt_formats").grid(row=3, column=0, sticky="w", padx=4)
+        fmtrow = ttk.Frame(opts)
+        fmtrow.grid(row=3, column=1, columnspan=5, sticky="w", padx=4)
+        self.var_fmt_anim = tk.BooleanVar(value=True)
+        self.var_fmt_fbx = tk.BooleanVar(value=False)
+        self.var_fmt_glb = tk.BooleanVar(value=False)
+        self.var_fmt_bvh = tk.BooleanVar(value=False)
+        for txt, var in (("Unity .anim", self.var_fmt_anim), ("FBX", self.var_fmt_fbx),
+                         ("glTF (.glb)", self.var_fmt_glb), ("BVH", self.var_fmt_bvh)):
+            ttk.Checkbutton(fmtrow, text=txt, variable=var).pack(side="left", padx=4)
+
+        self.var_rbundle = tk.BooleanVar(value=False)
+        self._tr(ttk.Checkbutton(opts, variable=self.var_rbundle), "rt_cb_bundle").grid(
+            row=4, column=0, columnspan=4, sticky="w", padx=4, pady=(2, 0))
+        self._tr(ttk.Label(opts), "rt_template").grid(row=5, column=0, sticky="w", padx=4)
+        self.var_rtemplate = tk.StringVar()
+        ttk.Entry(opts, textvariable=self.var_rtemplate).grid(
+            row=5, column=1, columnspan=4, sticky="ew", padx=4)
+        self._tr(ttk.Button(opts, command=self._pick(self.var_rtemplate, False)),
+                 "browse").grid(row=5, column=5, sticky="w", padx=4)
+
+        row += 1
+        info = ttk.Label(main, foreground="#555", wraplength=760, justify="left")
+        self._tr(info, "rt_info")
+        info.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
+
+        row += 1
+        btns = ttk.Frame(main)
+        btns.grid(row=row, column=0, columnspan=3, sticky="ew", **pad)
+        self.btn_rstart = ttk.Button(btns, command=self._start_retarget)
+        self._tr(self.btn_rstart, "rt_start")
+        self.btn_rstart.pack(side="left", padx=4)
+        self.btn_rstop = ttk.Button(btns, command=self._stop, state="disabled")
+        self._tr(self.btn_rstop, "stop")
+        self.btn_rstop.pack(side="left", padx=4)
+        self._tr(ttk.Button(btns, command=lambda: self._open(self.var_rout)), "open_output").pack(side="left", padx=4)
+
+    def _pick_rin(self) -> None:
+        if bool(self.var_rbatch.get()):
+            d = filedialog.askdirectory()
+        else:
+            d = filedialog.askopenfilename(
+                filetypes=[("FBX", "*.fbx"), ("All files", "*.*")])
+        if d:
+            self.var_rin.set(d)
+
     # -------------------------------------------------------------- helpers
 
     def _pick(self, var, is_dir):
@@ -604,9 +769,9 @@ class SifacGUI:
     def _set_running(self, running: bool) -> None:
         state_run = "disabled" if running else "normal"
         state_stop = "normal" if running else "disabled"
-        for b in (self.btn_start, self.btn_cstart):
+        for b in (self.btn_start, self.btn_cstart, self.btn_rstart):
             b.configure(state=state_run)
-        for b in (self.btn_stop, self.btn_cstop):
+        for b in (self.btn_stop, self.btn_cstop, self.btn_rstop):
             b.configure(state=state_stop)
         if hasattr(self, "btn_bpy"):
             self.btn_bpy.configure(state=state_run)
@@ -799,6 +964,116 @@ class SifacGUI:
         except Exception as exc:
             self._msgq.put(("error", (str(exc),)))
 
+    # ---------------------------------------------------------- Retarget run
+
+    def _start_retarget(self) -> None:
+        if self._busy():
+            return
+        inp = self.var_rin.get().strip()
+        out = self.var_rout.get().strip()
+        batch = bool(self.var_rbatch.get())
+        valid_in = (Path(inp).is_dir() if batch
+                    else (Path(inp).is_file() and inp.lower().endswith(".fbx")))
+        if not inp or not valid_in:
+            messagebox.showerror(self.t("err_input_title"), self.t("rt_err_input"))
+            return
+        if not out:
+            messagebox.showerror(self.t("err_output_title"), self.t("err_output_msg"))
+            return
+        formats = [name for name, var in (
+            ("anim", self.var_fmt_anim), ("fbx", self.var_fmt_fbx),
+            ("glb", self.var_fmt_glb), ("bvh", self.var_fmt_bvh)) if var.get()]
+        if not formats:
+            messagebox.showerror(self.t("err_input_title"), self.t("rt_err_fmt"))
+            return
+        # Optional: chain a Unity-bundle injection after the retarget.  Needs a
+        # template bundle, single (non-batch) mode and the .anim on (we inject
+        # the .anim).  Stored and kicked off when the retarget finishes.
+        self._pending_bundle = None
+        if bool(self.var_rbundle.get()):
+            tmpl = self.var_rtemplate.get().strip()
+            if batch or "anim" not in formats or not (tmpl and Path(tmpl).is_file()):
+                messagebox.showerror(self.t("err_input_title"), self.t("rt_err_template"))
+                return
+            anim_path = str(Path(out) / (Path(inp).stem + ".anim"))
+            bundle_path = str(Path(out) / (Path(inp).stem + ".unity"))
+            self._pending_bundle = (tmpl, anim_path, bundle_path)
+        # The retarget engine needs bpy. Offer the same one-click install as the
+        # Convert tab, then resume automatically when it finishes.
+        if not self._bpy_installed():
+            if messagebox.askyesno(self.t("bpy_need_title"), self.t("bpy_need_msg")):
+                self._pending_retarget = True
+                self._install_bpy()
+            return
+        self._pending_retarget = False
+
+        script = str(Path(__file__).resolve().parent / "sifac_anim_retarget.py")
+        cmd = [sys.executable, script]
+        if batch:
+            cmd += ["--batch", inp, "--outdir", out]
+        else:
+            cmd += ["--sifac", inp,
+                    "--out", str(Path(out) / (Path(inp).stem + ".anim"))]
+        cmd += ["--twist-strength", "%g" % float(self.var_rtwist.get()),
+                "--smooth", str(int(self.var_rsmooth.get())),
+                "--step", str(max(1, int(self.var_rstep.get()))),
+                "--format", ",".join(formats)]
+        if not self.var_rroot.get():
+            cmd.append("--no-root-motion")
+        if self.var_rmember.get().strip():
+            cmd += ["--member", self.var_rmember.get().strip()]
+        if self.var_rprefab.get().strip():
+            cmd += ["--prefab", self.var_rprefab.get().strip()]
+        try:
+            Path(out).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        self._begin("run_retarget")
+        self._run_stream(cmd, "retarget_done")
+
+    def _start_bundle_inject(self) -> None:
+        """Kick off the Unity-bundle injection queued by _start_retarget."""
+        tmpl, anim_path, bundle_path = self._pending_bundle
+        self._pending_bundle = None
+        # the retarget exited 0; make sure the .anim it should have written is
+        # actually there before handing it to the injector (clearer than a
+        # downstream "file not found").
+        if not Path(anim_path).is_file():
+            self._set_running(False)
+            self._status_render = lambda: self.t("rt_bundle_fail", rc=2)
+            self.var_status.set(self.t("rt_bundle_fail", rc=2))
+            self._log("error", self.t("rt_bundle_fail", rc=2)
+                      + ("\nmissing: %s" % anim_path))
+            return
+        script = str(Path(__file__).resolve().parent / "sifac_anim_to_bundle.py")
+        cmd = [sys.executable, script, "--template", tmpl,
+               "--anim", anim_path, "--out", bundle_path]
+        self.var_status.set(self.t("rt_bundle_running"))
+        self._set_running(True)
+        self._run_stream(cmd, "bundle_done")
+
+    def _run_stream(self, cmd: list, done_kind: str) -> None:
+        """Run a subprocess, stream its stdout to the log, post ``done_kind``
+        with the return code when it exits.  The Popen is tracked so Stop can
+        terminate it."""
+        def work():
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True,
+                                        errors="replace")
+                self._proc = proc
+                for line in proc.stdout:
+                    self._msgq.put(("log", ("build", line.rstrip())))
+                proc.wait()
+                self._msgq.put((done_kind, (proc.returncode,)))
+            except Exception as exc:
+                self._msgq.put((done_kind, (-1, str(exc))))
+            finally:
+                self._proc = None
+
+        self._worker = threading.Thread(target=work, daemon=True)
+        self._worker.start()
+
     def _begin(self, status_key: str) -> None:
         self.progress.configure(value=0, maximum=100)
         self._status_render = lambda: self.t(status_key)
@@ -810,6 +1085,14 @@ class SifacGUI:
             self._extractor.request_stop()
         if self._converter and self._worker and self._worker.is_alive():
             self._converter.request_stop()
+        # retarget / bundle run as subprocesses (no request_stop); kill the Popen
+        proc = getattr(self, "_proc", None)
+        if proc is not None and proc.poll() is None:
+            self._pending_bundle = None   # don't chain after a manual stop
+            try:
+                proc.terminate()
+            except Exception:
+                pass
         self._log("warn", self.t("stop_requested"))
 
     # ------------------------------------------------------- queue pumping
@@ -828,6 +1111,35 @@ class SifacGUI:
                     self._on_extract_done(payload[0])
                 elif kind == "cdone":
                     self._on_convert_done(payload[0])
+                elif kind == "retarget_done":
+                    rc = payload[0]
+                    if rc == 0:
+                        self._log("ok", self.t("rt_done"))
+                        if self._pending_bundle:
+                            self._start_bundle_inject()   # chain the injection
+                        else:
+                            self._set_running(False)
+                            self._status_render = lambda: self.t("rt_done")
+                            self.var_status.set(self.t("rt_done"))
+                    else:
+                        self._pending_bundle = None
+                        self._set_running(False)
+                        self._status_render = lambda: self.t("rt_done_fail", rc=rc)
+                        self.var_status.set(self.t("rt_done_fail", rc=rc))
+                        detail = f"\n{payload[1]}" if len(payload) > 1 else ""
+                        self._log("error", self.t("rt_done_fail", rc=rc) + detail)
+                elif kind == "bundle_done":
+                    rc = payload[0]
+                    self._set_running(False)
+                    if rc == 0:
+                        self._status_render = lambda: self.t("rt_bundle_done")
+                        self.var_status.set(self.t("rt_bundle_done"))
+                        self._log("ok", self.t("rt_bundle_done"))
+                    else:
+                        self._status_render = lambda: self.t("rt_bundle_fail", rc=rc)
+                        self.var_status.set(self.t("rt_bundle_fail", rc=rc))
+                        detail = f"\n{payload[1]}" if len(payload) > 1 else ""
+                        self._log("error", self.t("rt_bundle_fail", rc=rc) + detail)
                 elif kind == "error":
                     self._set_running(False)
                     self._status_render = lambda: self.t("status_error")
@@ -851,8 +1163,12 @@ class SifacGUI:
                         if self._pending_convert:
                             self._log("info", self.t("bpy_resume"))
                             self._start_convert()
+                        elif self._pending_retarget:
+                            self._log("info", self.t("bpy_resume"))
+                            self._start_retarget()
                     else:
                         self._pending_convert = False
+                        self._pending_retarget = False
                         detail = f"\n{payload[1]}" if len(payload) > 1 else ""
                         self._log("error", self.t("bpy_fail_log") + detail)
                         messagebox.showerror(
