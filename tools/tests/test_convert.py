@@ -728,6 +728,40 @@ def test_anim_dense_clip():
           "value-delta stays in sync after dropping the keyless curve")
 
 
+def test_bundle_install():
+    """Integrity values + SQLite Octo-db scan/patch for installing a mod."""
+    print("bundle install:")
+    import sqlite3
+    import hashlib
+    import zlib
+    import sifac_bundle_install as bi
+
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "pack_0"
+        f.write_bytes(b"hello bundle bytes")
+        info = bi.file_info(f)
+        check(info["size"] == 18, "size in bytes")
+        check(info["md5"] == hashlib.md5(b"hello bundle bytes").hexdigest(),
+              "md5 matches")
+        check(info["crc32"] == (zlib.crc32(b"hello bundle bytes") & 0xffffffff),
+              "crc32 matches")
+
+        # a tiny SQLite "Octo" db: locate then patch the pack row
+        db = Path(td) / "octo.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE assetbundle(name TEXT, size INTEGER, md5 TEXT, crc INTEGER)")
+        con.execute("INSERT INTO assetbundle VALUES('pack_0', 1, 'old', 0)")
+        con.commit(); con.close()
+
+        bi.cmd_patch_db(str(db), str(f), "assetbundle", "name", "pack_0",
+                        size_col="size", md5_col="md5", crc_col="crc", dry_run=False)
+        con = sqlite3.connect(db)
+        row = con.execute("SELECT size, md5, crc FROM assetbundle WHERE name='pack_0'").fetchone()
+        con.close()
+        check(row[0] == 18 and row[1] == info["md5"] and row[2] == info["crc32"],
+              "patch wrote new size/md5/crc into the pack row")
+
+
 def test_anim_merge():
     """Merging a faithful + a natural clip swaps only the arm group."""
     print("anim merge:")
@@ -800,6 +834,7 @@ def main():
     test_anim_smooth()
     test_anim_bundle_parse()
     test_anim_dense_clip()
+    test_bundle_install()
     test_anim_merge()
     print()
     if _FAILS:
