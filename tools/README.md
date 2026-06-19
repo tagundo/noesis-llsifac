@@ -250,6 +250,243 @@ python3 sifac_convert.py IN OUT --check
 > (`python3 tools/tests/test_convert.py`). 파일별 오류는 비치명적이라 나머지
 > 변환은 계속됩니다. 실제 게임 파일에서 이상이 보이면 샘플을 알려주세요.
 
+## ⭐ SIFAC 모션 → SIFAS 애니메이션 (Unity 없이 직접 리타깃)
+
+SIFAC(PS4/아케이드) 모션 FBX를 **SIFAS(스쿠스타)용 `.anim` 클립**으로 곧바로
+바꿉니다. **Unity의 Humanoid 리타깃을 거치지 않습니다.**
+
+> **왜 Humanoid를 피하나요?** 보통은 모션을 Humanoid로 임포트해 Unity가
+> 리타깃하게 두는데, Humanoid 리타깃은 **손실(lossy)** 입니다 — 머슬 공간으로
+> 클램프하고, 본 길이를 정규화하며, Humanoid가 아닌 본은 전부 버립니다. 그래서
+> 결과가 “반쪽짜리” 모션이 됩니다. 이 도구는 두 리그가 **같은 코어 스켈레톤**을
+> 공유한다는 점을 이용해, 각 본이 **자기 rest에서 회전한 양을 월드 공간에서**
+> SIFAS 리그로 옮깁니다(`dW = W_pose · W_rest⁻¹`). 월드 회전량은 두 리그가
+> 본의 로컬 축을 다르게 잡아도 **꼬임(twist) 없이** 그대로 전달됩니다 — 로컬
+> `matrix_basis`를 복사하면 축 차이만큼 비틀려 보이지만(=기괴한 움직임), 이
+> 방식은 실제 SIFAS 메시에 적용해 자연스러운 포즈를 확인했습니다.
+
+```bash
+# Blender 파이썬 모듈이 필요합니다 (FBX 변환과 동일):  pip install bpy
+
+# 한 개 변환
+python3 sifac_anim_retarget.py \
+    --sifac mot_06_maki_0510.fbx --out 0510.anim --name "0510 Daring"
+
+# 폴더 전체 일괄 변환
+python3 sifac_anim_retarget.py --batch ./sifac_motions --outdir ./anim_out
+```
+
+> **경로(중요):** 실제 SIFAS 게임 `.anim`은 본 경로를 **멤버 오브젝트 기준
+> 상대경로**(`Reference/Move/Hips_Position/Hips/...`)로 바인딩합니다(애니메이터가
+> 멤버에 붙어 있음). 그래서 **기본값은 접두어 없음**입니다. 멤버 이름을
+> 앞에 붙이면(`ch0004_co0019_member/...`) 모델의 트랜스폼과 경로가 안 맞아
+> **아무 반응이 없습니다**. 애니메이터가 멤버보다 위에 있는 특수한 셋업일
+> 때만 `--member ch0004_co0019_member`로 접두어를 켜세요.
+
+| 옵션 | 의미 |
+|------|------|
+| `--sifac FBX` / `--out ANIM` | 입력 SIFAC 모션 FBX / 출력 `.anim` |
+| `--batch DIR` / `--outdir DIR` | 폴더 안 모든 `.fbx`를 일괄 변환 |
+| `--member 이름` | (선택) 경로 접두어. 기본은 **없음**(게임 클립과 동일한 멤버 상대경로). 애니메이터가 멤버 위에 있을 때만 지정 |
+| `--name 이름` | 클립 이름 (기본: 파일명) |
+| `--prefab P` | 번들 스켈레톤 대신 특정 SIFAS 멤버 `.prefab`을 사용 |
+| `--start N` / `--end N` | 변환할 프레임 구간 (원본 프레임) |
+| `--step K` | 프레임 데시메이션 (예: `2` = 절반 키) |
+| `--no-root-motion` | 무대 이동·상하 바운스(루트 모션) 생략 |
+| `--no-twist-bones` | 롤/트위스트 본(`*ArmRoll`/`*ForeArmRoll`) 구동 생략 (아래 참고) |
+| `--twist-strength X` | ArmRoll/ForeArmRoll을 **얼마나** 적용할지. `1.0`=게임값(기본), `0`=끔, `>1`=더 강하게 |
+| `--smooth N` | (선택) N프레임 저역통과로 빠른 움직임(주로 팔)을 부드럽게. 기본 `0`(충실). `3`~`5` 권장 |
+| `--format LIST` | 출력 형식(쉼표): `anim,fbx,glb,gltf,bvh` 중 선택. 기본 `anim`. 예: `--format anim,fbx,glb` |
+
+> **GUI:** 도구상자(`sifac_gui.py`)의 **③ 리타깃 → SIFAS** 탭에서 위 옵션을
+> 슬라이더·체크박스로 그대로 조절할 수 있습니다(ArmRoll 강도, 부드러움, 프레임
+> 간격, 형식 선택, 일괄 폴더 처리). `bpy`는 ② 변환 탭의 원클릭 설치를 그대로
+> 씁니다.
+
+#### 여러 형식으로 내보내기 (`--format`)
+
+`.anim`은 Unity 에디터에 바로 드롭하는 형식이고, **FBX / glTF(.glb) / BVH**는
+SIFAS 리그에 모션을 **구워서**(bake) 내보내므로 Blender·Maya·웹 등 어떤 DCC에서나
+열립니다. 한 번에 여러 개도 가능합니다:
+
+```bash
+python3 sifac_anim_retarget.py --sifac mot_06_maki_0510.fbx \
+    --out 0510.anim --twist-strength 0.8 --smooth 3 \
+    --format anim,fbx,glb,bvh
+```
+
+- **anim** — Unity 제네릭 AnimationClip(에디터 텍스트). Unity 프로젝트에 바로.
+- **fbx** — 뼈대+애니. 표준. 어떤 툴에서나.
+- **glb / gltf** — 범용·웹 3D 표준(`glb`=단일 바이너리).
+- **bvh** — 모캡(뼈대+모션). 다른 리그로 재타깃하기 좋음.
+
+> 루트/무대 이동은 FBX·glTF에서는 오브젝트(아마튜어) 트랜스폼 애니로, BVH에서는
+> 루트 본 채널로 함께 구워집니다. `--no-root-motion`으로 끌 수 있습니다.
+
+**무엇이 들어가나:** 두 리그가 공유하는 **코어 본 60개의 회전 곡선** +
+**`Hips_Position` 위치 곡선**(루트/무대 모션 — 실제 게임 클립과 같은 노드) +
+**롤/트위스트 본 4개**(아래 “트위스트 본” 참고).
+출력은 표준 제네릭 `.anim`(쿼터니언 `m_RotationCurves`, CRC32 경로 해시의
+`ClipBindingConstant`, 60fps 메타)이라 Unity에 그대로 드롭하면 됩니다. 경로·
+바인딩·해시·세트팅 구조를 실제 SIFAS `.anim`과 맞춰 검증했습니다(`attribute`
+1=위치/2=회전, `typeID 4`=Transform). 그 외 SIFAS에만 있는 본(`Spine2` 등)은
+부모를 따라가되 부모 기준 rest를 유지합니다. `m_EulerCurves`/`m_EditorCurves`는
+에디터 표시용이라 비워두며 런타임 재생에는 영향이 없습니다.
+
+#### 트위스트 본 — 어깨·팔 살 접힘(파임) 방지
+
+SIFAS 리그에는 SIFAC에 없는 **롤 본**(`Left/RightArmRoll`,
+`Left/RightForeArmRoll`)이 있습니다. 이 본들을 rest로 두면 팔/손목이 크게
+비틀릴 때 어깨·팔꿈치 살이 **사탕 포장지처럼 접히고 안쪽으로 파입니다**. 실제
+SIFAS 게임 클립은 이 본들을 구동해 비틀림을 분산시킵니다. 이 도구는 그 게임
+리그 공식을 **그대로** 재현합니다 — 출하된 클립(`ch0202`)에서 측정한 값:
+`ArmRoll = −½·(Arm의 X축 비틀림)`, `ForeArmRoll = +½·(Hand의 X축 비틀림)`(교과서
+적 절반 비틀림). 측정 결과 상완 어깨쪽 단면이 강한 비틀림 프레임에서 약 **20%
+더 채워져**(덜 파임) 보입니다. 끄려면 `--no-twist-bones`.
+
+> **부드러움(smoothness)에 대해:** 직접 리타깃은 **원본의 빠른 팔 동작을 그대로**
+> 살립니다. Humanoid 리타깃 결과보다 “덜 부드럽게” 느껴질 수 있는데, 이는
+> Humanoid가 머슬 공간으로 **빠른 팔 움직임을 클램프·평활화(손실)** 하기 때문이고,
+> 우리 결과의 그 동작은 **지터(노이즈)가 아니라 실제 모션**입니다(스파이크의
+> 99%가 여러 프레임에 걸친 지속 동작). 더 부드러운(Humanoid 같은) 느낌을 원하면
+> `--smooth 3` 정도로 살짝 저역통과를 거세요 — 충실도를 조금 내주고 팔을 부드럽게
+> 만듭니다.
+
+> **검증:** 좌표 변환은 라운드트립으로 검증됩니다 — 리그를 다시 만들어 되읽으면
+> 프리팹 자신의 로컬 쿼터니언을 **~0.04°** 이내로 복원하고, 추출한 로컬 회전을
+> Unity 계층으로 다시 누적하면 의도한 월드 포즈를 **~0.1°** 이내로 재현합니다.
+> 좌우 본도 정확히 일치합니다(미러 없음). `--member`에 들어가는 대상 캐릭터의
+> 멤버 오브젝트 이름만 맞추면 됩니다. 코어 스켈레톤은 모든 SIFAS 아이돌이
+> 공유하므로 번들 스켈레톤으로 충분하고, 특정 코스튬에 정확히 맞추려면
+> `--prefab`로 그 캐릭터의 멤버 프리팹을 가리키세요.
+
+> **Direct SIFAC→SIFAS animation retarget (English):** converts a SIFAC motion
+> FBX straight to a SIFAS generic `.anim`, **bypassing Unity's lossy Humanoid
+> retargeting**. It copies each shared bone's rest-relative local rotation from
+> the SIFAC rig onto the SIFAS rig (both share the core skeleton), then reads it
+> back in Unity space and writes rotation curves + a Hips position curve with a
+> correct `ClipBindingConstant` (CRC32 path hashes). Needs `pip install bpy`.
+> The coordinate maths is validated by a rest round-trip (~0.04°) and a
+> hierarchy replay (~0.1°), with left/right bones matching exactly. It also
+> drives the SIFAS **twist/roll bones** (`*ArmRoll`/`*ForeArmRoll`) the way the
+> shipped game clips do — `ArmRoll = −½·twist(Arm)`, `ForeArmRoll = +½·twist(Hand)`
+> about the limb's X axis — so the shoulder/elbow skin doesn't pinch on hard
+> twists (disable with `--no-twist-bones`). Fast arm motion is kept faithfully;
+> `--smooth N` is an optional low-pass if you prefer the softer Humanoid feel.
+
+### 팔만 자연스럽게: 충실한 본체 + Humanoid 팔 병합 (`sifac_anim_merge.py`)
+
+직접 리타깃은 **원본 SIFAC 모션에 충실**합니다 — 몸통·다리·손가락·루트 모션엔
+이상적입니다. 그런데 **팔**은 SIFAC가 가리키는 그대로 SIFAS 리그에 올리면
+어색해 보일 수 있습니다. SIFAS 캐릭터는 자기 리그의 자연스러운 가동범위로 팔을
+들어야 자연스러운데, 그게 바로 Unity Humanoid 리타깃이 만들어주는 결과입니다.
+
+이 도구는 **둘의 장점만** 합칩니다: 충실한 클립에서 **팔 그룹만** Humanoid
+클립의 곡선으로 바꾸고, 나머지(몸통·다리·**손가락**·루트)는 전부 충실한 쪽을
+유지합니다.
+
+```bash
+# 1) 충실한 .anim (sifac_anim_retarget.py 결과)
+# 2) 자연스러운 .anim (같은 모션을 Unity Humanoid로 리타깃한 것)
+# 3) 병합  →  자연스러운 팔 + 충실한 손가락/몸/다리
+python3 sifac_anim_merge.py faithful.anim natural.anim out.anim
+```
+
+- 두 클립은 **같은 모션, 같은 SIFAS 스켈레톤(멤버 상대경로), 시간 정렬**이어야 합니다.
+- 기본으로 Humanoid에서 가져오는 본: `LeftShoulder RightShoulder Left/RightArm
+  Left/RightForeArm Left/RightHand Neck Head` (+`*Roll`). `--natural-bones` /
+  `--also-natural`로 조절. 나머지·**손가락은 충실한 쪽** 유지(Humanoid가 손가락을
+  뭉개는 걸 보완).
+- **48° 방향 차이는 문제 없음**: 로컬 회전은 전역 회전에 불변이라, 바꿔 끼운
+  팔이 자동으로 본체의 방향 프레임을 따릅니다.
+
+> **English:** `sifac_anim_merge.py` combines a *faithful* clip (the direct
+> retarget) with a *natural* clip (your Unity Humanoid retarget): it keeps every
+> curve from the faithful one except the **arm group**, which it swaps in from
+> the Humanoid clip. Result = Humanoid-natural arms that fit the SIFAS rig +
+> faithful body, legs, **fingers** and root motion. The two clips must be the
+> same motion on the same SIFAS skeleton, time-aligned. Local rotations are
+> global-rotation-invariant, so the swapped arms inherit the body's facing
+> automatically.
+
+### Unity 번들로 주입 (`sifac_anim_to_bundle.py`)
+
+`.anim`은 Unity **에디터** 텍스트 자산입니다. 게임은 **AssetBundle**(바이너리
+`UnityFS`)을 읽으므로, 클립을 게임에 넣으려면 번들 안에 들어가야 합니다. Unity
+없이 번들을 **처음부터** 만드는 건 불안정하므로, 이 도구는 게임에서 추출한 **실제
+번들을 템플릿**으로 받아 그 안의 `AnimationClip`을 우리 클립으로 **바꿔치기**한 뒤
+다시 묶습니다 (`pip install UnityPy`, Unity·bpy 불필요).
+
+```bash
+# 1) (선택) 번들 내부 형식 확인
+python3 sifac_anim_to_bundle.py --inspect mvjubr_0.unity --dump-tree
+
+# 2) 주입: 템플릿 번들 + 우리 .anim → 새 번들
+python3 sifac_anim_to_bundle.py --template mvjubr_0.unity \
+    --anim 0510.anim --out 0510_inj.unity
+```
+
+> **형식(확인됨):** SIFAS 번들은 **Unity 2018.4**, 클립은 **제네릭**이라 모션이
+> `m_MuscleClip`(런타임)에 들어 있고 에디터 커브(`m_RotationCurves`)는 **비어
+> 있습니다**. 바인딩(`genericBindings`)은 `path`가 멤버 상대경로의 **CRC32 해시**,
+> `attribute` 1=위치·2=회전(쿼터니언)·3=스케일·4=오일러, `typeID` 4(Transform).
+> 이 도구는 우리 클립을 **DenseClip**(모든 커브를 균일 샘플링) 하나로 베이크하고
+> Streamed/Constant를 비워, 커브 인덱스 순서 = 바인딩 순서가 되게 합니다.
+> **클립 이름은 기본적으로 유지**하므로(예: `ch0202_so2003`) 게임이 그 자리에서
+> 우리 모션을 로드합니다. 나머지(Avatar·Animator·본 계층·다른 에셋)는 그대로.
+
+> **검증:** 헤드리스로 — 써 넣은 DenseClip을 다시 디코드하면 원본 `.anim` 값과
+> **~1e-7**까지 일치하고, 번들 repack→reload도 정상입니다. **게임 내 실제 재생만**
+> Unity가 필요하니 마지막엔 게임에서 확인하세요. (이름을 바꾸려면 `--clip-name`,
+> 샘플레이트는 `--fps`.)
+
+> **English:** `.anim` is a Unity *editor* asset; the game loads binary
+> AssetBundles. `sifac_anim_to_bundle.py` takes a **template bundle** (a real
+> SIFAS animation bundle you extracted) and bakes the retargeted motion into its
+> runtime clip, then repacks — Unity-free, via `UnityPy`. SIFAS clips
+> (Unity 2018.4, generic) keep motion in `m_MuscleClip`, so the tool writes a
+> single `DenseClip` with matching `genericBindings` (CRC32 path hash, attribute
+> 1=pos/2=rot, typeID 4) and keeps the clip name so the game loads your motion in
+> its place. The written clip decodes back to the source `.anim` to ~1e-7 and the
+> bundle re-loads cleanly; only in-game playback needs Unity, so test it there.
+
+### 게임에 넣기 — 설치 (`sifac_bundle_install.py`)
+
+수정한 번들을 그냥 덮어써도 게임은 안 받습니다. SIFAS는 KLab의 **Octo** 에셋
+시스템을 써서, DB(매니페스트)에 각 팩의 **size·md5**(·crc)가 들어 있고, 파일이
+DB와 다르면 **손상**으로 보고 원본을 다시 받습니다. 그래서 설치는 두 단계:
+
+1. **배치** — 새 번들을 게임이 두는 위치에 팩 이름(예: `mvjubr_0`)으로 둡니다.
+2. **DB 갱신** — Octo DB의 그 팩 행을 새 size·md5(·crc)로 고쳐, 무결성 검사를
+   통과시킵니다.
+
+이 도구는 스키마 없이도 확실한 부분을 해 줍니다:
+
+```bash
+# 1) 새 번들의 무결성 값 — DB에 써 넣을 size·md5·crc (+ 내부 CAB 이름)
+python3 sifac_bundle_install.py --info mvjubr_0__0510Daring.unity
+
+# 2) Octo DB(SQLite)에서 팩 행 찾기 — 어떤 테이블/열에 들어있는지
+python3 sifac_bundle_install.py --scan-db octo.db --find mvjubr_0
+
+# 3) 행 갱신 (스키마 확인 후; 기본 dry-run, 실제 쓰기는 --apply)
+python3 sifac_bundle_install.py --patch-db octo.db --bundle mvjubr_0__0510Daring.unity \
+    --table assetbundle --name-col name --name mvjubr_0 \
+    --size-col size --md5-col md5 --crc-col crc --apply
+```
+
+> **필요:** 정확한 패치를 켜려면 **당신 클라이언트의 Octo DB(매니페스트) 샘플**이
+> 필요합니다(번들 때와 같은 방식). `--scan-db` 결과를 주시면 테이블·열을 고정하고
+> 읽기-검증까지 붙입니다. Octo DB가 암호화/난독화돼 있으면 그 복호 단계도 추가합니다.
+
+> **English:** A modded bundle won't load until the game's **Octo** database
+> agrees with it: Octo stores each pack's size/md5(/crc), and a mismatch makes
+> the client re-download the original. `sifac_bundle_install.py --info` prints
+> the exact size/md5/crc (and internal CAB name) to write; `--scan-db` finds the
+> pack's row in the SQLite Octo db; `--patch-db` updates it (dry-run unless
+> `--apply`). Share a sample Octo db and the patch step is pinned to your
+> client's schema and validated by reading the row back.
+
 ### (참고) 옛 방식 — Noesis 에서 열기
 
 풀린 `.bmarc`/`.btx`는 이 저장소의 Noesis 플러그인
