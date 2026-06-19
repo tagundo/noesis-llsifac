@@ -139,7 +139,7 @@ Plugin options (edit them at the top of the script):
 
 | Term | Meaning |
 |------|---------|
-| **SIFAC** | *Love Live! School idol festival ~after school ACTIVITY~*, the game these files come from. |
+| **SIFAC** | *Love Live! School idol festival \~after school ACTIVITY\~*, the game these files come from. |
 | **FBX** | A standard 3D file (models + animation) that Blender, Unity, Unreal and Maya all understand. |
 | **PNG** | A standard image file — here, the game's textures. |
 | **QuickBMS** | A classic unpacking tool. This toolkit can use it, **or** its own built-in engine instead. |
@@ -299,7 +299,7 @@ MMD용 **VMD** 애니메이션 내보내기에는 별도의 vmd 모듈이 필요
 
 | 용어 | 뜻 |
 |------|----|
-| **SIFAC** | *Love Live! School idol festival ~after school ACTIVITY~*. 이 파일들이 나오는 게임. |
+| **SIFAC** | *Love Live! School idol festival \~after school ACTIVITY\~*. 이 파일들이 나오는 게임. |
 | **FBX** | Blender·Unity·Unreal·Maya가 모두 이해하는 표준 3D 파일(모델 + 애니메이션). |
 | **PNG** | 표준 이미지 파일 — 여기서는 게임 텍스처. |
 | **QuickBMS** | 오래된 압축 해제 도구. 이 툴은 이걸 쓸 수도, **자체 내장 엔진**을 쓸 수도 있습니다. |
