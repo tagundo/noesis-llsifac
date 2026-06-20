@@ -567,12 +567,109 @@ def _bake_prefab_action(ob, order, tbl, local_by_name, root_delta, times, fps,
     scene.render.fps_base = 1.0
 
 
+def _bake_onto_model(model_fbx, order, tbl, local_by_name, root_delta, times, fps,
+                     ob_ref, verbose=True):
+    """Bake the retargeted motion onto the user's *own* SIFAS model armature.
+
+    Why not just export our rebuilt core skeleton?  Because an FBX/glTF clip
+    stores each bone's rotation in that bone's **local axes**.  Our rebuilt rig
+    and a real SIFAS model rig sit the same joints in the same places but give
+    their bones different *roll* (local axis twist) -- so copying the local
+    rotations by name across the two rigs twists the limbs (measured ~63 deg of
+    error).  The fix is to drive the model by **absolute world orientation**:
+    for each frame we point every shared bone exactly where the motion points,
+    in the *model's* own space, and let Blender solve each bone's local value.
+    That is invariant to the model's bone roll (measured 0 deg of error), so the
+    exported FBX/glTF plays correctly on the model it was baked onto.
+
+    Imports ``model_fbx`` (the SIFAS character, mesh + armature), keys its
+    armature, and returns it ready to export.
+    """
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.fbx(filepath=str(model_fbx))
+    mob = next((o for o in bpy.data.objects
+                if o not in before and o.type == 'ARMATURE'), None)
+    if mob is None:
+        raise RuntimeError("no armature found in target model %s" % model_fbx)
+
+    B3 = _B().to_3x3()
+    # global frame: our rebuilt (B3) space -> the model's space.  Same body-frame
+    # alignment the retarget uses, so any facing/handedness difference between the
+    # imported model and our rebuild is absorbed here rather than skewing limbs.
+    try:
+        A = _snap_signed_permutation(
+            [list(r) for r in (_body_frame(mob) @ _body_frame(ob_ref).inverted())]
+        ).to_3x3()
+    except Exception:
+        A = Matrix.Identity(3)
+    mw_inv = mob.matrix_world.to_3x3().inverted()
+
+    rest_local = {n: _quat_wxyz(tbl[n][1]) for n in order}
+    for pb in mob.pose.bones:
+        pb.rotation_mode = 'QUATERNION'
+    drive = [n for n in order if n in mob.pose.bones]            # bones the model has
+    by_depth = sorted(drive, key=lambda n: _depth(tbl, n))       # parents before children
+    if verbose:
+        print("[model] '%s': driving %d/%d shared bones; frame align A=%s"
+              % (mob.name, len(drive), len(order),
+                 [[int(x) for x in r] for r in A]))
+
+    scene = bpy.context.scene
+    last_kf = 0
+    n_t = len(times)
+    prog_step = max(1, n_t // 50)
+    for fi in range(n_t):
+        if verbose and (fi % prog_step == 0 or fi + 1 == n_t):
+            print("[progress] model-bake %d/%d" % (fi + 1, n_t), flush=True)
+        kf = int(round(times[fi] * fps))
+        last_kf = kf
+        Wu = {}
+
+        def uw(n):
+            if n in Wu:
+                return Wu[n]
+            p = tbl[n][0]
+            seq = local_by_name.get(n)
+            L = (_quat_wxyz(seq[fi]) if seq else rest_local[n]).to_matrix()
+            Wu[n] = L if (p is None or p not in tbl) else uw(p) @ L
+            return Wu[n]
+
+        # absolute target orientation per bone, in the model's armature space
+        tgt = {n: mw_inv @ (A @ (B3 @ uw(n))) for n in drive}
+        cur_depth = None
+        for n in by_depth:
+            d = _depth(tbl, n)
+            if cur_depth is not None and d != cur_depth:
+                bpy.context.view_layer.update()   # children must see parents posed
+            cur_depth = d
+            pb = mob.pose.bones[n]
+            M = pb.matrix.copy()                  # keep the bone's own translation
+            R3 = tgt[n]
+            for i in range(3):
+                for j in range(3):
+                    M[i][j] = R3[i][j]
+            pb.matrix = M
+        bpy.context.view_layer.update()
+        for n in drive:
+            mob.pose.bones[n].keyframe_insert("rotation_quaternion", frame=kf)
+        if root_delta is not None:
+            mob.location = A @ root_delta[fi]
+            mob.keyframe_insert("location", frame=kf)
+    scene.frame_start = 0
+    scene.frame_end = max(1, last_kf)
+    scene.render.fps = int(round(fps))
+    scene.render.fps_base = 1.0
+    return mob
+
+
 def _export_formats(ob, out_base, formats, verbose=True):
-    """Export the baked armature ``ob`` to each DCC format requested."""
+    """Export the baked armature ``ob`` (and any mesh children) to each format."""
     scene = bpy.context.scene
     for o in bpy.data.objects:
         o.select_set(False)
     ob.select_set(True)
+    for ch in ob.children_recursive:
+        ch.select_set(True)
     bpy.context.view_layer.objects.active = ob
     os.makedirs(os.path.dirname(os.path.abspath(out_base)) or ".", exist_ok=True)
     written = []
@@ -583,7 +680,8 @@ def _export_formats(ob, out_base, formats, verbose=True):
         try:
             if fmt == "fbx":
                 bpy.ops.export_scene.fbx(
-                    filepath=path, use_selection=True, object_types={'ARMATURE'},
+                    filepath=path, use_selection=True,
+                    object_types={'ARMATURE', 'MESH'},
                     add_leaf_bones=False, bake_anim=True,
                     bake_anim_use_all_bones=True, bake_anim_use_nla_strips=False,
                     bake_anim_use_all_actions=False, bake_anim_simplify_factor=0.0,
@@ -595,6 +693,13 @@ def _export_formats(ob, out_base, formats, verbose=True):
                     use_selection=True, export_animations=True,
                     export_frame_range=True, export_yup=True)
             elif fmt == "bvh":
+                # BVH stores joints as offset vectors with no per-bone roll, so
+                # it cannot represent this rig's bone orientations: a round-trip
+                # is tens of degrees off and many tools refuse the zero-length
+                # leaf joints.  Kept for completeness, but warn -- prefer fbx/glb.
+                print("[warn] BVH cannot carry this rig's bone orientations "
+                      "(no per-joint roll); the result is approximate and may "
+                      "not import cleanly. Prefer fbx/glb.")
                 bpy.ops.export_anim.bvh(
                     filepath=path, frame_start=scene.frame_start,
                     frame_end=scene.frame_end, root_transform_only=False)
@@ -666,7 +771,8 @@ def retarget_file(sifac_fbx, out_anim, member, clip_name=None,
                   prefab=None, skeleton_json=None,
                   frame_start=None, frame_end=None, step=1,
                   root_motion=True, twist_bones=True, twist_strength=1.0,
-                  smooth=0, formats=("anim",), verbose=True):
+                  smooth=0, formats=("anim",), target_model=None,
+                  song_length=None, verbose=True):
     if not HAVE_BPY:
         raise RuntimeError("Blender's bpy module is required (pip install bpy).")
     formats = tuple(formats) if formats else ("anim",)
@@ -701,6 +807,24 @@ def retarget_file(sifac_fbx, out_anim, member, clip_name=None,
         f0, f1 = scene.frame_start, scene.frame_end
     f0 = int(math.ceil(f0)) if frame_start is None else int(frame_start)
     f1 = int(math.floor(f1)) if frame_end is None else int(frame_end)
+
+    # Trim the FRONT to the SIFAS song length.  SIFAC clips can run longer than
+    # the song; keeping the TAIL lines the dance's finish up with the song's end,
+    # so we drop the early frames -- just advance f0 by however much overruns.
+    # times rebase to 0 on their own ((f - f0)/fps), as does the root baseline.
+    if song_length is not None and song_length > 0:
+        keep = int(round(song_length * fps))
+        src_secs = (f1 - f0) / fps if fps else 0.0
+        if (f1 - f0) > keep:
+            new_f0 = f1 - keep
+            if verbose:
+                print("[trim] source %.2fs > song %.2fs: cut %d frame(s) off the "
+                      "front (keep frames %d..%d = %.2fs)"
+                      % (src_secs, song_length, new_f0 - f0, new_f0, f1, keep / fps))
+            f0 = new_f0
+        elif verbose:
+            print("[trim] source %.2fs <= song %.2fs: no trim needed"
+                  % (src_secs, song_length))
 
     ob, order = build_sifas_armature(tbl)
     shared = [n for n in core if n in ob.pose.bones and n in src.pose.bones]
@@ -886,7 +1010,7 @@ def retarget_file(sifac_fbx, out_anim, member, clip_name=None,
             print("[ok] %s  (%d frames, %d rotation curves, %d position curves)"
                   % (anim_path, len(frames), len(rot_curves), len(pos_curves)))
 
-    # Other formats: bake the motion onto the rebuilt SIFAS rig, export via Blender.
+    # Other formats: bake the motion onto a SIFAS rig and export via Blender.
     dcc = [f for f in formats if f != "anim"]
     if dcc:
         # Drop everything except our rebuilt SIFAS rig first.  The imported SIFAC
@@ -895,16 +1019,33 @@ def retarget_file(sifac_fbx, out_anim, member, clip_name=None,
         # glTF/FBX exporters try to evaluate that action and spew one
         # "Animation target pose.bones[...] not found" warning per bone.  Purge
         # the stray actions too, so the only animation exported is the clean
-        # clip the bake is about to create on ``ob``.
+        # clip the bake is about to create.
         for o in list(bpy.data.objects):
             if o is not ob:
                 bpy.data.objects.remove(o, do_unlink=True)
         for act in list(bpy.data.actions):
             bpy.data.actions.remove(act)
-        _bake_prefab_action(ob, order, tbl, local_by_name,
-                            root_delta if do_root else None, times, fps,
-                            verbose=verbose)
-        written += _export_formats(ob, out_base, dcc, verbose=verbose)
+        if target_model:
+            # Bake onto the user's OWN model (mesh + armature) by absolute world
+            # orientation -- robust to the model's bone roll, so the FBX/glTF
+            # plays correctly on it.  Exports the animated model itself.
+            export_ob = _bake_onto_model(
+                target_model, order, tbl, local_by_name,
+                root_delta if do_root else None, times, fps, ob, verbose=verbose)
+        else:
+            # No model given: bake onto our rebuilt core skeleton.  This clip is
+            # faithful *on this skeleton*, but its bone-local rotations only map
+            # cleanly onto a rig with identical bone axes -- pass --target-model
+            # to bake straight onto your SIFAS character instead.
+            if verbose:
+                print("[note] no --target-model: exporting the rebuilt core "
+                      "skeleton. To drive your own SIFAS model, pass "
+                      "--target-model your_model.fbx (avoids limb twisting).")
+            _bake_prefab_action(ob, order, tbl, local_by_name,
+                                root_delta if do_root else None, times, fps,
+                                verbose=verbose)
+            export_ob = ob
+        written += _export_formats(export_ob, out_base, dcc, verbose=verbose)
 
     return written if len(written) != 1 else written[0]
 
@@ -952,6 +1093,18 @@ def main():
     ap.add_argument("--format", default="anim", metavar="LIST",
                     help="comma-separated output formats: %s (default: anim). "
                          "e.g. --format anim,fbx,glb" % ",".join(EXPORT_FORMATS))
+    ap.add_argument("--target-model", default=None, metavar="FBX",
+                    help="for fbx/glb/bvh export: your SIFAS character FBX (mesh "
+                         "+ armature). The motion is baked straight onto it by "
+                         "absolute world orientation, so it plays correctly on "
+                         "your model. Without this the bare rebuilt skeleton is "
+                         "exported and its bone-local rotations will twist a rig "
+                         "with different bone axes. (.anim ignores this.)")
+    ap.add_argument("--song-length", type=float, default=None, metavar="SEC",
+                    help="target SIFAS song length in seconds. If the SIFAC clip "
+                         "is longer, the FRONT is trimmed so the kept tail is "
+                         "SEC seconds (the dance's finish aligns with the song's "
+                         "end). Shorter clips are left as-is.")
     args = ap.parse_args(_argv())
     formats = [f.strip().lower() for f in args.format.split(",") if f.strip()]
 
@@ -983,7 +1136,9 @@ def main():
                               step=args.step, root_motion=not args.no_root_motion,
                               twist_bones=not args.no_twist_bones,
                               twist_strength=args.twist_strength,
-                              smooth=args.smooth, formats=formats)
+                              smooth=args.smooth, formats=formats,
+                              target_model=args.target_model,
+                              song_length=args.song_length)
             except Exception as e:  # keep going through the batch
                 print("[fail] %s: %s" % (fb.name, e))
         return 0
@@ -996,7 +1151,9 @@ def main():
                   step=args.step, root_motion=not args.no_root_motion,
                   twist_bones=not args.no_twist_bones,
                   twist_strength=args.twist_strength,
-                  smooth=args.smooth, formats=formats)
+                  smooth=args.smooth, formats=formats,
+                  target_model=args.target_model,
+                  song_length=args.song_length)
     return 0
 
 
