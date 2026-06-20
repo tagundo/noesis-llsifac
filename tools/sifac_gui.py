@@ -161,7 +161,11 @@ STRINGS = {
     "rt_smooth": {"en": "Smoothing (frames, 0 = off / faithful)",
                   "ko": "부드러움 (프레임, 0 = 끔 / 충실)"},
     "rt_step": {"en": "Frame step (decimate)", "ko": "프레임 간격 (솎기)"},
+    "rt_song": {"en": "Song length s (0 = no trim)",
+                "ko": "노래 길이 초 (0 = 안 자름)"},
     "rt_formats": {"en": "Export formats", "ko": "내보내기 형식"},
+    "rt_target_model": {"en": "Bake onto my model FBX (fbx/glb, optional)",
+                        "ko": "내 모델 FBX에 굽기 (fbx/glb, 선택)"},
     "rt_cb_bundle": {"en": "Also inject into a Unity bundle (template needed)",
                      "ko": "Unity 번들에도 주입 (템플릿 필요)"},
     "rt_template": {"en": "Template bundle (.unity / .bundle)",
@@ -651,6 +655,10 @@ class SifacGUI:
         self.var_rstep = tk.IntVar(value=1)
         ttk.Spinbox(opts, from_=1, to=10, increment=1, width=6,
                     textvariable=self.var_rstep).grid(row=2, column=2, sticky="w", padx=4)
+        self._tr(ttk.Label(opts), "rt_song").grid(row=2, column=3, sticky="e", padx=4)
+        self.var_rsong = tk.DoubleVar(value=0.0)   # 0 = off (no trim)
+        ttk.Spinbox(opts, from_=0.0, to=600.0, increment=1.0, width=8,
+                    textvariable=self.var_rsong).grid(row=2, column=4, sticky="w", padx=4)
 
         self._tr(ttk.Label(opts), "rt_formats").grid(row=3, column=0, sticky="w", padx=4)
         fmtrow = ttk.Frame(opts)
@@ -663,15 +671,24 @@ class SifacGUI:
                          ("glTF (.glb)", self.var_fmt_glb), ("BVH", self.var_fmt_bvh)):
             ttk.Checkbutton(fmtrow, text=txt, variable=var).pack(side="left", padx=4)
 
+        # Target model: bake fbx/glb/bvh straight onto the user's own SIFAS rig
+        # (absolute world orientation -> no limb twisting from bone-roll diffs).
+        self._tr(ttk.Label(opts), "rt_target_model").grid(row=4, column=0, sticky="w", padx=4)
+        self.var_rmodel = tk.StringVar()
+        ttk.Entry(opts, textvariable=self.var_rmodel).grid(
+            row=4, column=1, columnspan=4, sticky="ew", padx=4)
+        self._tr(ttk.Button(opts, command=self._pick(self.var_rmodel, False)),
+                 "browse").grid(row=4, column=5, sticky="w", padx=4)
+
         self.var_rbundle = tk.BooleanVar(value=False)
         self._tr(ttk.Checkbutton(opts, variable=self.var_rbundle), "rt_cb_bundle").grid(
-            row=4, column=0, columnspan=4, sticky="w", padx=4, pady=(2, 0))
-        self._tr(ttk.Label(opts), "rt_template").grid(row=5, column=0, sticky="w", padx=4)
+            row=5, column=0, columnspan=4, sticky="w", padx=4, pady=(2, 0))
+        self._tr(ttk.Label(opts), "rt_template").grid(row=6, column=0, sticky="w", padx=4)
         self.var_rtemplate = tk.StringVar()
         ttk.Entry(opts, textvariable=self.var_rtemplate).grid(
-            row=5, column=1, columnspan=4, sticky="ew", padx=4)
+            row=6, column=1, columnspan=4, sticky="ew", padx=4)
         self._tr(ttk.Button(opts, command=self._pick(self.var_rtemplate, False)),
-                 "browse").grid(row=5, column=5, sticky="w", padx=4)
+                 "browse").grid(row=6, column=5, sticky="w", padx=4)
 
         row += 1
         info = ttk.Label(main, foreground="#555", wraplength=760, justify="left")
@@ -1024,6 +1041,14 @@ class SifacGUI:
             cmd += ["--member", self.var_rmember.get().strip()]
         if self.var_rprefab.get().strip():
             cmd += ["--prefab", self.var_rprefab.get().strip()]
+        if self.var_rmodel.get().strip():
+            cmd += ["--target-model", self.var_rmodel.get().strip()]
+        try:
+            song = float(self.var_rsong.get())
+        except Exception:
+            song = 0.0
+        if song > 0:
+            cmd += ["--song-length", "%g" % song]
         try:
             Path(out).mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -1052,10 +1077,31 @@ class SifacGUI:
         self._set_running(True)
         self._run_stream(cmd, "bundle_done")
 
+    @staticmethod
+    def _parse_progress(line: str):
+        """`[progress] <stage> <done>/<total>` -> (stage, done, total) or None."""
+        s = line.strip()
+        if not s.startswith("[progress] "):
+            return None
+        parts = s[len("[progress] "):].split()
+        if len(parts) == 2 and "/" in parts[1]:
+            d, _, t = parts[1].partition("/")
+            try:
+                return (parts[0], int(d), int(t))
+            except ValueError:
+                return None
+        return None
+
     def _run_stream(self, cmd: list, done_kind: str) -> None:
         """Run a subprocess, stream its stdout to the log, post ``done_kind``
-        with the return code when it exits.  The Popen is tracked so Stop can
+        with the return code when it exits.  `[progress] stage d/t` lines drive
+        the progress bar instead of the log.  The Popen is tracked so Stop can
         terminate it."""
+        # run the child unbuffered so progress/log lines arrive live, not in a
+        # block at the end.
+        if cmd and cmd[0] == sys.executable and "-u" not in cmd:
+            cmd = [cmd[0], "-u"] + cmd[1:]
+
         def work():
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -1063,7 +1109,11 @@ class SifacGUI:
                                         errors="replace")
                 self._proc = proc
                 for line in proc.stdout:
-                    self._msgq.put(("log", ("build", line.rstrip())))
+                    pr = self._parse_progress(line)
+                    if pr:
+                        self._msgq.put(("progress", (pr[0], pr[1], pr[2], "")))
+                    else:
+                        self._msgq.put(("log", ("build", line.rstrip())))
                 proc.wait()
                 self._msgq.put((done_kind, (proc.returncode,)))
             except Exception as exc:
@@ -1106,7 +1156,9 @@ class SifacGUI:
                 elif kind == "progress":
                     stage, done, total, current = payload
                     self.progress.configure(maximum=max(1, total), value=done)
-                    self.var_status.set(f"{stage}: {done}/{total}  {current}")
+                    pct = int(100 * done / total) if total else 0
+                    tail = f"  {current}" if current else ""
+                    self.var_status.set(f"{stage}: {done}/{total} ({pct}%){tail}")
                 elif kind == "edone":
                     self._on_extract_done(payload[0])
                 elif kind == "cdone":
