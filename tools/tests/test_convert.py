@@ -817,6 +817,162 @@ def test_anim_merge():
         check(("path: %d" % h) in text, "merged clip has arm binding")
 
 
+def test_anim_target_model():
+    """--target-model bakes by absolute world orientation, so the motion is
+    faithful on a rig with DIFFERENT bone roll (a plain local-rotation copy is
+    not).  Skipped where Blender's bpy module is unavailable."""
+    print("anim target-model bake:")
+    try:
+        import bpy  # noqa: F401
+        import math
+        import random
+        from mathutils import Quaternion, Vector
+        import sifac_anim_retarget as ar
+    except Exception as e:
+        print("  skip (bpy unavailable): %s" % e)
+        return
+
+    def wrot(o, nm):
+        return (o.matrix_world @ o.pose.bones[nm].matrix).to_3x3().to_quaternion()
+
+    def ang(a, b):
+        return math.degrees(2 * math.acos(min(1.0, abs(a.dot(b)))))
+
+    tbl, _rel, _core, _m = ar.load_skeleton()
+    bones = [b for b in ["Spine", "Chest", "LeftArm", "LeftForeArm",
+                         "RightUpLeg", "Head"] if b in tbl]
+    nf = 6
+    times = [i / 30.0 for i in range(nf)]
+    lbn = {}
+    for bi, b in enumerate(bones):
+        seq = []
+        for i in range(nf):
+            q = Quaternion(Vector((0.3, 0.6, 0.2)).normalized(),
+                           math.radians(10 + 5 * i + 9 * bi))
+            seq.append((q.x, q.y, q.z, q.w))
+        lbn[b] = seq
+
+    # reference world rotations on our rebuilt rig
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    ob, order = ar.build_sifas_armature(tbl)
+    ar._bake_prefab_action(ob, order, tbl, lbn, None, times, 30.0, verbose=False)
+    ref = {}
+    for b in bones:
+        seq = []
+        for i in range(nf):
+            bpy.context.scene.frame_set(int(round(times[i] * 30.0)))
+            bpy.context.view_layer.update()
+            seq.append(wrot(ob, b))
+        ref[b] = seq
+
+    # a "user model": same joints, perturbed roll + a global yaw, written to FBX
+    with tempfile.TemporaryDirectory() as td:
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        mdl, _o2 = ar.build_sifas_armature(tbl)
+        bpy.context.view_layer.objects.active = mdl
+        bpy.ops.object.mode_set(mode='EDIT')
+        random.seed(13)
+        for eb in mdl.data.edit_bones:
+            eb.roll += math.radians(random.uniform(-70, 70))
+        bpy.ops.object.mode_set(mode='OBJECT')
+        mdl.rotation_euler = (0, 0, math.radians(25))
+        for o in bpy.data.objects:
+            o.select_set(o is mdl)
+        mp = str(Path(td) / "model.fbx")
+        bpy.ops.export_scene.fbx(filepath=mp, use_selection=True,
+                                 object_types={'ARMATURE'}, add_leaf_bones=False,
+                                 axis_forward='-Z', axis_up='Y')
+
+        # bake the motion onto that model
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        ob_ref, order3 = ar.build_sifas_armature(tbl)
+        mob = ar._bake_onto_model(mp, order3, tbl, lbn, None, times, 30.0,
+                                  ob_ref, verbose=False)
+
+        # relative motion (delta from frame 0) is global-frame independent
+        worst = 0.0
+        for b in bones:
+            mseq = []
+            for i in range(nf):
+                bpy.context.scene.frame_set(int(round(times[i] * 30.0)))
+                bpy.context.view_layer.update()
+                mseq.append(wrot(mob, b))
+            for i in range(nf):
+                dref = ref[b][0].inverted() @ ref[b][i]
+                dmod = mseq[0].inverted() @ mseq[i]
+                worst = max(worst, ang(dref, dmod))
+        print("  worst cross-rig motion error: %.4f deg" % worst)
+        check(worst < 0.5, "target-model bake faithful across bone-roll difference")
+
+
+def test_anim_song_trim():
+    """--song-length trims the FRONT so the kept tail matches the song length.
+    Skipped where Blender's bpy module is unavailable."""
+    print("anim song-length trim:")
+    try:
+        import bpy  # noqa: F401
+        import math
+        import re
+        from mathutils import Quaternion, Vector
+        import sifac_anim_retarget as ar
+    except Exception as e:
+        print("  skip (bpy unavailable): %s" % e)
+        return
+
+    tbl, _rel, _core, _m = ar.load_skeleton()
+    with tempfile.TemporaryDirectory() as td:
+        # source clip: frames 0..60 at 30 fps == 2.0 s
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        src, _order = ar.build_sifas_armature(tbl)
+        sc = bpy.context.scene
+        sc.render.fps = 30
+        sc.render.fps_base = 1.0
+        drive = [b for b in ["Spine", "LeftArm", "RightUpLeg", "Head"] if b in tbl]
+        for pb in src.pose.bones:
+            pb.rotation_mode = 'QUATERNION'
+        for f in (0, 30, 60):
+            sc.frame_set(f)
+            for bi, b in enumerate(drive):
+                q = Quaternion(Vector((0.3, 0.6, 0.2)).normalized(),
+                               math.radians(5 + 0.4 * f + 9 * bi))
+                src.pose.bones[b].rotation_quaternion = q
+                src.pose.bones[b].keyframe_insert("rotation_quaternion", frame=f)
+        for o in bpy.data.objects:
+            o.select_set(o is src)
+        bpy.context.view_layer.objects.active = src
+        sfbx = str(Path(td) / "src.fbx")
+        bpy.ops.export_scene.fbx(filepath=sfbx, use_selection=True,
+                                 object_types={'ARMATURE'}, add_leaf_bones=False,
+                                 bake_anim=True)
+
+        def stop_first(path):
+            t = Path(path).read_text()
+            stop = float(re.search(r'm_StopTime:\s*([-\d.eE+]+)', t).group(1))
+            times = [float(x) for x in
+                     re.findall(r'^\s*time:\s*([-\d.eE+]+)', t, re.M)]
+            return stop, min(times)
+
+        full = str(Path(td) / "full.anim")
+        ar.retarget_file(sfbx, full, "", clip_name="x", formats=("anim",),
+                         verbose=False)
+        s_full, _ = stop_first(full)
+        check(approx(s_full, 2.0, 0.05), "untrimmed clip keeps full 2.0 s")
+
+        trim = str(Path(td) / "trim.anim")
+        ar.retarget_file(sfbx, trim, "", clip_name="x", formats=("anim",),
+                         song_length=1.0, verbose=False)
+        s_trim, first = stop_first(trim)
+        check(approx(s_trim, 1.0, 0.05), "song-length 1.0 trims output to 1.0 s")
+        check(approx(first, 0.0, 1e-6), "kept tail rebases to time 0")
+
+        # a song longer than the clip leaves it untouched
+        keep_all = str(Path(td) / "keepall.anim")
+        ar.retarget_file(sfbx, keep_all, "", clip_name="x", formats=("anim",),
+                         song_length=99.0, verbose=False)
+        s_keep, _ = stop_first(keep_all)
+        check(approx(s_keep, 2.0, 0.05), "song longer than clip -> no trim")
+
+
 def main():
     test_math()
     test_png()
@@ -836,6 +992,8 @@ def main():
     test_anim_dense_clip()
     test_bundle_install()
     test_anim_merge()
+    test_anim_target_model()
+    test_anim_song_trim()
     print()
     if _FAILS:
         print(f"{len(_FAILS)} FAILURE(S):")
